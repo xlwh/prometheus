@@ -109,27 +109,27 @@ func main() {
 
 	// 配置文件结构，这边直接用一个局部的配置文件变量，感觉不是特别好维护
 	cfg := struct {
-		configFile string                   		// 配置文件路径
+		configFile string // 配置文件路径
 
-		localStoragePath    string           		// 数据保存路径
-		notifier            notifier.Options        // 应该是alter相关的一些配置，队列长度，http处理的回调函数配置等
-		notifierTimeout     model.Duration          // 告警超时时间？
-		forGracePeriod      model.Duration          // 优雅重启的时间间隔？？
-		outageTolerance     model.Duration          // 断电容忍时间？？
-		resendDelay         model.Duration          // 响应延迟
-		web                 web.Options             // web服务的一些配置
-		tsdb                tsdbOptions             // tsdb的一些配置
+		localStoragePath    string           // 数据保存路径
+		notifier            notifier.Options // 应该是alter相关的一些配置，队列长度，http处理的回调函数配置等
+		notifierTimeout     model.Duration   // 告警超时时间？
+		forGracePeriod      model.Duration   // 优雅重启的时间间隔？？
+		outageTolerance     model.Duration   // 断电容忍时间？？
+		resendDelay         model.Duration   // 响应延迟
+		web                 web.Options      // web服务的一些配置
+		tsdb                tsdbOptions      // tsdb的一些配置
 		lookbackDelta       model.Duration
 		webTimeout          model.Duration
-		queryTimeout        model.Duration          // 查询超时
-		queryConcurrency    int                     // 查询并发限制
-		queryMaxSamples     int                     // 查询最大点数限制
+		queryTimeout        model.Duration // 查询超时
+		queryConcurrency    int            // 查询并发限制
+		queryMaxSamples     int            // 查询最大点数限制
 		RemoteFlushDeadline model.Duration
 
 		prometheusURL   string
 		corsRegexString string
 
-		promlogConfig promlog.Config                // 日志配置
+		promlogConfig promlog.Config // 日志配置
 	}{
 		// 初始化一部分默认的配置
 		notifier: notifier.Options{
@@ -162,7 +162,7 @@ func main() {
 	a.Flag("web.read-timeout",
 		"Maximum duration before timing out read of the request, and closing idle connections.").
 		Default("5m").SetValue(&cfg.webTimeout)
-    // 最大连接数限制，默认是512
+	// 最大连接数限制，默认是512
 	a.Flag("web.max-connections", "Maximum number of simultaneous connections.").
 		Default("512").IntVar(&cfg.web.MaxConnections)
 
@@ -190,7 +190,7 @@ func main() {
 		Default("console_libraries").StringVar(&cfg.web.ConsoleLibrariesPath)
 
 	a.Flag("web.page-title", "Document title of Prometheus instance.").
-		Default("小斌斌的Prometheus").StringVar(&cfg.web.PageTitle)
+		Default("测试用的Prometheus").StringVar(&cfg.web.PageTitle)
 
 	a.Flag("web.cors.origin", `Regex for CORS origin. It is fully anchored. Example: 'https?://(domain1|domain2)\.com'`).
 		Default(".*").StringVar(&cfg.corsRegexString)
@@ -198,7 +198,7 @@ func main() {
 	// 数据目录,默认是在当前文件夹下面的data目录
 	a.Flag("storage.tsdb.path", "Base path for metrics storage.").
 		Default("data/").StringVar(&cfg.localStoragePath)
-    // block的时间跨度
+	// block的时间跨度
 	a.Flag("storage.tsdb.min-block-duration", "Minimum duration of a data block before being persisted. For use in testing.").
 		Hidden().Default("2h").SetValue(&cfg.tsdb.MinBlockDuration)
 
@@ -364,7 +364,7 @@ func main() {
 
 	// 启动两个存储，一个是本地的存储，一个是远端存储
 	var (
-		localStorage  = &readyStorage{}  // 写入，查询，的封装，对底层的tsdb进行了一层封装
+		localStorage  = &readyStorage{} // 写入，查询，的封装，对底层的tsdb进行了一层封装
 		remoteStorage = remote.NewStorage(log.With(logger, "component", "remote"), prometheus.DefaultRegisterer, localStorage.StartTime, cfg.localStoragePath, time.Duration(cfg.RemoteFlushDeadline))
 		fanoutStorage = storage.NewFanout(logger, localStorage, remoteStorage)
 	)
@@ -1049,12 +1049,12 @@ func (s *readyStorage) Stats(statsByLabelName string) (*tsdb.Stats, error) {
 // tsdbOptions is tsdb.Option version with defined units.
 // This is required as tsdb.Option fields are unit agnostic (time).
 type tsdbOptions struct {
-	WALSegmentSize         units.Base2Bytes              // WAL 日志切分大小
-	RetentionDuration      model.Duration                // 数据过期时间
-	MaxBytes               units.Base2Bytes              // 数据大小限制
+	WALSegmentSize         units.Base2Bytes // WAL 日志切分大小
+	RetentionDuration      model.Duration   // 数据过期时间
+	MaxBytes               units.Base2Bytes // 数据大小限制
 	NoLockfile             bool
 	AllowOverlappingBlocks bool
-	WALCompression         bool							 // 是否要对WAL log进行压缩
+	WALCompression         bool // 是否要对WAL log进行压缩
 	StripeSize             int
 	MinBlockDuration       model.Duration
 	MaxBlockDuration       model.Duration
