@@ -217,39 +217,39 @@ func (h *Handler) ApplyConfig(conf *config.Config) error {
 
 // Options for the web Handler.
 type Options struct {
-	Context               context.Context			// Context
-	TSDBRetentionDuration model.Duration            // 数据过期时间
-	TSDBDir               string                    // 数据保存目录
-	TSDBMaxBytes          units.Base2Bytes          // 字节数限制？？不知道是读还是写
-	LocalStorage          LocalStorage              // 把后端存储对象也注入到配置中
+	Context               context.Context  // Context
+	TSDBRetentionDuration model.Duration   // 数据过期时间
+	TSDBDir               string           // 数据保存目录
+	TSDBMaxBytes          units.Base2Bytes // 字节数限制？？不知道是读还是写
+	LocalStorage          LocalStorage     // 把后端存储对象也注入到配置中
 	Storage               storage.Storage
-	QueryEngine           *promql.Engine            // 查询引擎，主要负责PromQL解析和数据计算逻辑，比较核心的一个结构
+	QueryEngine           *promql.Engine // 查询引擎，主要负责PromQL解析和数据计算逻辑，比较核心的一个结构
 	LookbackDelta         time.Duration
-	ScrapeManager         *scrape.Manager           // 数据抓取服务
-	RuleManager           *rules.Manager            // 告警规则管理器
-	Notifier              *notifier.Manager         // 告警通知管理器
-	Version               *PrometheusVersion        // 版本管理器
-	Flags                 map[string]string         // 一些flag
+	ScrapeManager         *scrape.Manager    // 数据抓取服务
+	RuleManager           *rules.Manager     // 告警规则管理器
+	Notifier              *notifier.Manager  // 告警通知管理器
+	Version               *PrometheusVersion // 版本管理器
+	Flags                 map[string]string  // 一些flag
 
-	ListenAddress              string               // http监听地址，127.0.0.1或者0.0.0.0
-	CORSOrigin                 *regexp.Regexp       // 解决一些跨域问题
-	ReadTimeout                time.Duration        // 查询超时
-	MaxConnections             int                  // 最大连接数
+	ListenAddress              string         // http监听地址，127.0.0.1或者0.0.0.0
+	CORSOrigin                 *regexp.Regexp // 解决一些跨域问题
+	ReadTimeout                time.Duration  // 查询超时
+	MaxConnections             int            // 最大连接数
 	ExternalURL                *url.URL
-	RoutePrefix                string               // url的一些前缀之类的
+	RoutePrefix                string // url的一些前缀之类的
 	UseLocalAssets             bool
 	UserAssetsPath             string
 	ConsoleTemplatesPath       string
 	ConsoleLibrariesPath       string
 	EnableLifecycle            bool
-	EnableAdminAPI             bool                // 是否开启管理类API
-	PageTitle                  string              // 页面标题
-	RemoteReadSampleLimit      int                 // RemoteRead的数据点数限制
-	RemoteReadConcurrencyLimit int                 // RemoteRead的并发限制，对Remote存储的一个包含吧，这块考虑得还是可以的
+	EnableAdminAPI             bool   // 是否开启管理类API
+	PageTitle                  string // 页面标题
+	RemoteReadSampleLimit      int    // RemoteRead的数据点数限制
+	RemoteReadConcurrencyLimit int    // RemoteRead的并发限制，对Remote存储的一个包含吧，这块考虑得还是可以的
 	RemoteReadBytesInFrame     int
 
 	Gatherer   prometheus.Gatherer
-	Registerer prometheus.Registerer               // 监控指标的注册
+	Registerer prometheus.Registerer // 监控指标的注册
 }
 
 // New initializes a new web Handler.
@@ -301,6 +301,7 @@ func New(logger log.Logger, o *Options) *Handler {
 	factoryAr := func(_ context.Context) api_v1.AlertmanagerRetriever { return h.notifier }
 	FactoryRr := func(_ context.Context) api_v1.RulesRetriever { return h.ruleManager }
 
+	// o.Storage用于写入数据
 	h.apiV1 = api_v1.NewAPI(h.queryEngine, h.storage, o.Storage, factoryTr, factoryAr,
 		func() config.Config {
 			h.mtx.RLock()

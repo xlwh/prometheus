@@ -209,7 +209,7 @@ func init() {
 func NewAPI(
 	qe *promql.Engine,
 	q storage.SampleAndChunkQueryable,
-	append     storage.Appendable,
+	append storage.Appendable,
 	tr func(context.Context) TargetRetriever,
 	ar func(context.Context) AlertmanagerRetriever,
 	configFunc func() config.Config,
@@ -231,7 +231,7 @@ func NewAPI(
 	return &API{
 		QueryEngine:           qe,
 		Queryable:             q,
-		append: append,
+		append:                append,
 		targetRetriever:       tr,
 		alertmanagerRetriever: ar,
 
@@ -326,7 +326,7 @@ func (api *API) Register(r *route.Router) {
 	r.Put("/admin/tsdb/clean_tombstones", wrap(api.cleanTombstones))
 	r.Put("/admin/tsdb/snapshot", wrap(api.snapshot))
 
-	// Put APIs
+	// 构造压测数据使用
 	r.Post("/put", wrap(api.putSample))
 }
 
@@ -1392,14 +1392,13 @@ func filterExtLabelsFromMatchers(pbMatchers []*prompb.LabelMatcher, externalLabe
 }
 
 type PutSample struct {
-	Metric string				`json:"metric"`
-	Tags map[string]string		`json:"tags,omitempty"`
-	TimeStamp int64				`json:"timestamp,omitempty"`
-	Value float64				`json:"value,omitempty"`
+	Metric    string            `json:"metric"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	TimeStamp int64             `json:"timestamp,omitempty"`
+	Value     float64           `json:"value,omitempty"`
 }
 
-
-// Put data
+// 写入时序数据点，用于压测使用
 func (api *API) putSample(r *http.Request) apiFuncResult {
 	defer r.Body.Close()
 	// Wrap reader if it's gzip encoded.
@@ -1431,7 +1430,6 @@ func (api *API) putSample(r *http.Request) apiFuncResult {
 	default:
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
 	}
-
 
 	dec := jsoniter.NewDecoder(br)
 	dps := make([]*PutSample, 1)
