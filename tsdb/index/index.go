@@ -36,17 +36,26 @@ import (
 	"github.com/prometheus/prometheus/tsdb/fileutil"
 )
 
+/*
+	megic
+	version
+	TOC
+	Postings Table
+ */
+
 const (
 	// MagicIndex 4 bytes at the head of an index file.
-	MagicIndex = 0xBAAAD700
+	MagicIndex = 0xBAAAD700						// magic,标识数据，防止写错
 	// HeaderLen represents number of bytes reserved of index for header.
 	HeaderLen = 5
 
+	// 索引数据的版本号
 	// FormatV1 represents 1 version of index.
 	FormatV1 = 1
 	// FormatV2 represents 2 version of index.
 	FormatV2 = 2
 
+	// 索引在磁盘上的格式
 	indexFilename = "index"
 )
 
@@ -55,6 +64,7 @@ type indexWriterSeries struct {
 	chunks []chunks.Meta // series file offset of chunks
 }
 
+// 方便进行数据排序，构建索引的时候，会按照Tag排序，丢到索引中
 type indexWriterSeriesSlice []*indexWriterSeries
 
 func (s indexWriterSeriesSlice) Len() int      { return len(s) }
@@ -64,13 +74,14 @@ func (s indexWriterSeriesSlice) Less(i, j int) bool {
 	return labels.Compare(s[i].labels, s[j].labels) < 0
 }
 
+// 写索引状态定义
 type indexWriterStage uint8
 
 const (
-	idxStageNone indexWriterStage = iota
-	idxStageSymbols
-	idxStageSeries
-	idxStageDone
+	idxStageNone indexWriterStage = iota			// 还没有开始写数据
+	idxStageSymbols									// 写符号表
+	idxStageSeries									// 写时序数据Meta
+	idxStageDone									// 写索引完成
 )
 
 func (s indexWriterStage) String() string {
@@ -87,6 +98,7 @@ func (s indexWriterStage) String() string {
 	return "<unknown>"
 }
 
+// 初始化CRC表，用于数据校验，计算数据校验码，CRC32
 // The table gets initialized with sync.Once but may still cause a race
 // with any other use of the crc32 package anywhere. Thus we initialize it
 // before.
@@ -104,20 +116,26 @@ func newCRC32() hash.Hash32 {
 
 // Writer implements the IndexWriter interface for the standard
 // serialization format.
+// 核心结构，可以进行写索引数据的操作
 type Writer struct {
-	ctx context.Context
+	ctx context.Context							// Context
 
+	// 不知道这里为啥要有三个写文件句柄
 	// For the main index file.
-	f *FileWriter
-
+	f *FileWriter								// 写文件的句柄，FD
 	// Temporary file for postings.
 	fP *FileWriter
 	// Temporary file for posting offsets table.
 	fPO   *FileWriter
+
+
 	cntPO uint64
 
-	toc           TOC
-	stage         indexWriterStage
+	/*
+		Symbols、Series、LabelIndices、LabelIndicesTable、Postings、PostingsTable
+	 */
+	toc           TOC						  // 标记各个部分的起始位置
+	stage         indexWriterStage			  // 标记当前写索引数据的进度
 	postingsStart uint64 // Due to padding, can differ from TOC entry.
 
 	// Reusable memory.
@@ -133,12 +151,13 @@ type Writer struct {
 	labelNames   map[string]uint64     // Label names, and their usage.
 
 	// Hold last series to validate that clients insert new series in order.
+	// 保存最后一条时间线的一些信息
 	lastSeries labels.Labels
 	lastRef    uint64
 
-	crc32 hash.Hash
+	crc32 hash.Hash			// 校验码
 
-	Version int
+	Version int				// 版本
 }
 
 // TOC represents index Table Of Content that states where each section of index starts.
@@ -180,7 +199,9 @@ func NewTOCFromByteSlice(bs ByteSlice) (*TOC, error) {
 }
 
 // NewWriter returns a new Writer to the given filename. It serializes data in format version 2.
+// 给定文件夹名，打开一个索引写入器
 func NewWriter(ctx context.Context, fn string) (*Writer, error) {
+	// 打开对应的目录
 	dir := filepath.Dir(fn)
 
 	df, err := fileutil.OpenDir(dir)
@@ -189,10 +210,12 @@ func NewWriter(ctx context.Context, fn string) (*Writer, error) {
 	}
 	defer df.Close() // Close for platform windows.
 
+	// 清理一遍数据目录
 	if err := os.RemoveAll(fn); err != nil {
 		return nil, errors.Wrap(err, "remove any existing index at path")
 	}
 
+	// 同时会打开三个文件，进行数据写入？？
 	// Main index file we are building.
 	f, err := NewFileWriter(fn)
 	if err != nil {
@@ -208,10 +231,13 @@ func NewWriter(ctx context.Context, fn string) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// 不知道这样写的目的是什么
 	if err := df.Sync(); err != nil {
 		return nil, errors.Wrap(err, "sync dir")
 	}
 
+	// 创建数据写入器
 	iw := &Writer{
 		ctx:   ctx,
 		f:     f,
@@ -220,12 +246,17 @@ func NewWriter(ctx context.Context, fn string) (*Writer, error) {
 		stage: idxStageNone,
 
 		// Reusable memory.
-		buf1: encoding.Encbuf{B: make([]byte, 0, 1<<22)},
-		buf2: encoding.Encbuf{B: make([]byte, 0, 1<<22)},
+		// 打开两个buffer，每个buffer的大小是4M
+		buf1: encoding.Encbuf{B: make([]byte, 0, 4194304)},
+		buf2: encoding.Encbuf{B: make([]byte, 0, 4194304)},
 
-		labelNames: make(map[string]uint64, 1<<8),
+		// 存放TagK ->  xxx的，初始化256个
+		labelNames: make(map[string]uint64, 256),
 		crc32:      newCRC32(),
 	}
+
+	// 先把Meta写上,megicNumber、Version,不过这个时候是在Buffer中的
+	// 还没有刷到文件中去，假如这个时候断电，那么这部分数据将会不存在
 	if err := iw.writeMeta(); err != nil {
 		return nil, err
 	}
@@ -236,6 +267,7 @@ func (w *Writer) write(bufs ...[]byte) error {
 	return w.f.Write(bufs...)
 }
 
+// 指定偏移量，写数据到指定的位置
 func (w *Writer) writeAt(buf []byte, pos uint64) error {
 	return w.f.WriteAt(buf, pos)
 }
@@ -299,19 +331,23 @@ func (fw *FileWriter) WriteAt(buf []byte, pos uint64) error {
 }
 
 // AddPadding adds zero byte padding until the file size is a multiple size.
+// 增加一些占位符,起到对其的作用
 func (fw *FileWriter) AddPadding(size int) error {
+	// 判断文件大小是否对齐了
 	p := fw.pos % uint64(size)
 	if p == 0 {
 		return nil
 	}
 	p = uint64(size) - p
 
+	// 没对齐，写入一些空的数据，将文件对齐
 	if err := fw.Write(make([]byte, p)); err != nil {
 		return errors.Wrap(err, "add padding")
 	}
 	return nil
 }
 
+// 刷出buffer中的数据，关闭写索引器
 func (fw *FileWriter) Close() error {
 	if err := fw.Flush(); err != nil {
 		return err
@@ -322,46 +358,58 @@ func (fw *FileWriter) Close() error {
 	return fw.f.Close()
 }
 
+// 删除索引文件
 func (fw *FileWriter) Remove() error {
 	return os.Remove(fw.name)
 }
 
 // ensureStage handles transitions between write stages and ensures that IndexWriter
 // methods are called in an order valid for the implementation.
+//  sureStage处理写阶段之间的过渡，并确保以对实现有效的顺序调用IndexWriter方法
+// 需要传入当前的数据状态
 func (w *Writer) ensureStage(s indexWriterStage) error {
+	// 如果索引已经写完了，那么就可以不用继续处理了
 	select {
 	case <-w.ctx.Done():
 		return w.ctx.Err()
 	default:
 	}
 
+	// 期望的状态和当前状态是一样的，那么也不用继续再进行一次处理
+	// 也就是已经达到期望的状态
 	if w.stage == s {
 		return nil
 	}
+	// 如果还是在上一个状态
 	if w.stage < s-1 {
 		// A stage has been skipped.
 		if err := w.ensureStage(s - 1); err != nil {
 			return err
 		}
 	}
+	// 状态错误
 	if w.stage > s {
 		return errors.Errorf("invalid stage %q, currently at %q", s, w.stage)
 	}
 
 	// Mark start of sections in table of contents.
+	// 标记开始的位置,记录TOC
 	switch s {
+	// 符号表
 	case idxStageSymbols:
 		w.toc.Symbols = w.f.pos
 		if err := w.startSymbols(); err != nil {
 			return err
 		}
+		// 符号表结束，到了写时序
 	case idxStageSeries:
 		if err := w.finishSymbols(); err != nil {
 			return err
 		}
 		w.toc.Series = w.f.pos
-
+		// 写入完成
 	case idxStageDone:
+		// 写TOC
 		w.toc.LabelIndices = w.f.pos
 		// LabelIndices generation depends on the posting offset
 		// table produced at this stage.
@@ -395,6 +443,7 @@ func (w *Writer) ensureStage(s indexWriterStage) error {
 	return nil
 }
 
+// 写Meta
 func (w *Writer) writeMeta() error {
 	w.buf1.Reset()
 	w.buf1.PutBE32(MagicIndex)
@@ -404,10 +453,13 @@ func (w *Writer) writeMeta() error {
 }
 
 // AddSeries adds the series one at a time along with its chunks.
+// 增加一条时间线，这条时间线可能有多个chunk
 func (w *Writer) AddSeries(ref uint64, lset labels.Labels, chunks ...chunks.Meta) error {
+	// 首先，需要对状态进行调整,这块其实就是一个状态机,标记当前在写时序数据状态
 	if err := w.ensureStage(idxStageSeries); err != nil {
 		return err
 	}
+	// 和最后一条时序进行对比，要保证有序
 	if labels.Compare(lset, w.lastSeries) <= 0 {
 		return errors.Errorf("out-of-order series added with label set %q", lset)
 	}
@@ -417,6 +469,7 @@ func (w *Writer) AddSeries(ref uint64, lset labels.Labels, chunks ...chunks.Meta
 	}
 	// We add padding to 16 bytes to increase the addressable space we get through 4 byte
 	// series references.
+	// 数据对齐,按照16字节的对齐
 	if err := w.addPadding(16); err != nil {
 		return errors.Errorf("failed to write padding bytes: %v", err)
 	}
@@ -426,14 +479,18 @@ func (w *Writer) AddSeries(ref uint64, lset labels.Labels, chunks ...chunks.Meta
 	}
 
 	w.buf2.Reset()
+	// 写入Tag的长度
 	w.buf2.PutUvarint(len(lset))
 
+	// 遍历Tag，依次处理， Tag key 和tagV 符号编码，保存符号编码后的值
 	for _, l := range lset {
+		// tagK 构建符号表
 		index, err := w.symbols.ReverseLookup(l.Name)
 		if err != nil {
 			return errors.Errorf("symbol entry for %q does not exist, %v", l.Name, err)
 		}
 		w.labelNames[l.Name]++
+		// 写入符号
 		w.buf2.PutUvarint32(index)
 
 		index, err = w.symbols.ReverseLookup(l.Value)
@@ -443,14 +500,15 @@ func (w *Writer) AddSeries(ref uint64, lset labels.Labels, chunks ...chunks.Meta
 		w.buf2.PutUvarint32(index)
 	}
 
+	// 写入数据的长度
 	w.buf2.PutUvarint(len(chunks))
 
 	if len(chunks) > 0 {
 		c := chunks[0]
-		w.buf2.PutVarint64(c.MinTime)
-		w.buf2.PutUvarint64(uint64(c.MaxTime - c.MinTime))
-		w.buf2.PutUvarint64(c.Ref)
-		t0 := c.MaxTime
+		w.buf2.PutVarint64(c.MinTime)     // 写minTime
+		w.buf2.PutUvarint64(uint64(c.MaxTime - c.MinTime))    // len
+		w.buf2.PutUvarint64(c.Ref)     // id
+		t0 := c.MaxTime       // maxTime
 		ref0 := int64(c.Ref)
 
 		for _, c := range chunks[1:] {
@@ -466,6 +524,7 @@ func (w *Writer) AddSeries(ref uint64, lset labels.Labels, chunks ...chunks.Meta
 	w.buf1.Reset()
 	w.buf1.PutUvarint(w.buf2.Len())
 
+	// 写校验码
 	w.buf2.PutHash(w.crc32)
 
 	if err := w.write(w.buf1.Get(), w.buf2.Get()); err != nil {
@@ -485,6 +544,7 @@ func (w *Writer) startSymbols() error {
 	return w.write([]byte("alenblen"))
 }
 
+// 写入符号位
 func (w *Writer) AddSymbol(sym string) error {
 	if err := w.ensureStage(idxStageSymbols); err != nil {
 		return err
@@ -1286,10 +1346,13 @@ func (s Symbols) Lookup(o uint32) (string, error) {
 	return sym, nil
 }
 
+// 把一些字符串进行符号编码，用来节省一些磁盘存储
 func (s Symbols) ReverseLookup(sym string) (uint32, error) {
 	if len(s.offsets) == 0 {
 		return 0, errors.Errorf("unknown symbol %q - no symbols", sym)
 	}
+	// 在符号表里面搜索，直到搜索到，符号表里面存储的是byte数据
+	// 不是字符串数据
 	i := sort.Search(len(s.offsets), func(i int) bool {
 		// Any decoding errors here will be lost, however
 		// we already read through all of this at startup.
@@ -1326,6 +1389,7 @@ func (s Symbols) ReverseLookup(sym string) (uint32, error) {
 	if s.version == FormatV2 {
 		return uint32(res), nil
 	}
+	// 编码就是POS
 	return uint32(s.bs.Len() - lastLen), nil
 }
 

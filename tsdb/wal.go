@@ -1226,6 +1226,7 @@ func deprecatedWALExists(logger log.Logger, dir string) (bool, error) {
 }
 
 // MigrateWAL rewrites the deprecated write ahead log into the new format.
+// 重新WAL log???
 func MigrateWAL(logger log.Logger, dir string) (err error) {
 	if logger == nil {
 		logger = log.NewNopLogger()

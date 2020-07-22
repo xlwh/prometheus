@@ -38,7 +38,7 @@ import (
 
 const (
 	DefaultSegmentSize = 128 * 1024 * 1024 // 128 MB
-	pageSize           = 32 * 1024         // 32KB
+	pageSize           = 32 * 1024         // 32KB, 一页的大小是32KB
 	recordHeaderSize   = 7
 )
 
@@ -47,14 +47,14 @@ const (
 // before.
 var castagnoliTable = crc32.MakeTable(crc32.Castagnoli)
 
-// page is an in memory buffer used to batch disk writes.
+// page is an in memory buffer used to batch disk writes.    // 内存buffer，方便进行批量写磁盘
 // Records bigger than the page size are split and flushed separately.
 // A flush is triggered when a single records doesn't fit the page size or
 // when the next record can't fit in the remaining free page space.
 type page struct {
 	alloc   int
 	flushed int
-	buf     [pageSize]byte
+	buf     [pageSize]byte    // 32KB
 }
 
 func (p *page) remaining() int {
@@ -74,6 +74,7 @@ func (p *page) reset() {
 }
 
 // Segment represents a segment file.
+// 一个Segment的大小是128M
 type Segment struct {
 	*os.File
 	dir string
@@ -246,16 +247,23 @@ func New(logger log.Logger, reg prometheus.Registerer, dir string, compress bool
 
 // NewSize returns a new WAL over the given directory.
 // New segments are created with the specified size.
+// 按照给定的大小，创建WAL
 func NewSize(logger log.Logger, reg prometheus.Registerer, dir string, segmentSize int, compress bool) (*WAL, error) {
+	// 传入的segmentSize必须是页大小的整数倍，方便进行对齐处理
+	// 也就是32K的整数倍，这里有个问题，为什么pageSize必须是32K
 	if segmentSize%pageSize != 0 {
 		return nil, errors.New("invalid segment size")
 	}
+	// 创建目录,目录的权限是0777的
 	if err := os.MkdirAll(dir, 0777); err != nil {
 		return nil, errors.Wrap(err, "create dir")
 	}
+	// 如果没创建日志记录器，那么这创建一个空的日志记录器
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
+
+	// 创建一个WAL对象
 	w := &WAL{
 		dir:         dir,
 		logger:      logger,
@@ -265,8 +273,10 @@ func NewSize(logger log.Logger, reg prometheus.Registerer, dir string, segmentSi
 		stopc:       make(chan chan struct{}),
 		compress:    compress,
 	}
+	// 创建监控
 	w.metrics = newWALMetrics(reg)
 
+	// 创建一个新的Segments，在这里，一个Segment的大小一般是
 	_, last, err := w.Segments()
 	if err != nil {
 		return nil, errors.Wrap(err, "get segment range")
@@ -575,12 +585,14 @@ func (w *WAL) pagesPerSegment() int {
 
 // Log writes the records into the log.
 // Multiple records can be passed at once to reduce writes and increase throughput.
+// 写日志,一次可以写多条数据
 func (w *WAL) Log(recs ...[]byte) error {
 	w.mtx.Lock()
 	defer w.mtx.Unlock()
 	// Callers could just implement their own list record format but adding
 	// a bit of extra logic here frees them from that overhead.
 	for i, r := range recs {
+		// 写入数据
 		if err := w.log(r, i == len(recs)-1); err != nil {
 			w.metrics.writesFailed.Inc()
 			return err
@@ -590,12 +602,14 @@ func (w *WAL) Log(recs ...[]byte) error {
 }
 
 // log writes rec to the log and forces a flush of the current page if:
-// - the final record of a batch
-// - the record is bigger than the page size
-// - the current page is full.
+// 以下的几种情况，会强制刷页
+// - the final record of a batch						   	一个批量的最后一条数据
+// - the record is bigger than the page size				写入的数据大于页的大小，24K
+// - the current page is full.								当前页已经写满了
 func (w *WAL) log(rec []byte, final bool) error {
 	// When the last page flush failed the page will remain full.
 	// When the page is full, need to flush it before trying to add more records to it.
+	// 当页面已满时，需要先刷新页面，然后再尝试向其中添加更多记录
 	if w.page.full() {
 		if err := w.flushPage(true); err != nil {
 			return err

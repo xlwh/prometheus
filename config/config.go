@@ -37,11 +37,13 @@ var (
 )
 
 // Load parses the YAML input s into a Config.
+// 解析yaml配置文件
 func Load(s string) (*Config, error) {
 	cfg := &Config{}
 	// If the entire config body is empty the UnmarshalYAML method is
 	// never called. We thus have to set the DefaultConfig at the entry
 	// point as well.
+	// 设置一些默认值
 	*cfg = DefaultConfig
 
 	err := yaml.UnmarshalStrict([]byte(s), cfg)

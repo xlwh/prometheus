@@ -47,6 +47,7 @@ import (
 	"github.com/prometheus/prometheus/util/testutil"
 )
 
+// 打开一个TSDB
 func openTestDB(t testing.TB, opts *Options, rngs []int64) (db *DB, close func()) {
 	tmpdir, err := ioutil.TempDir("", "test")
 	testutil.Ok(t, err)
@@ -65,7 +66,26 @@ func openTestDB(t testing.TB, opts *Options, rngs []int64) (db *DB, close func()
 	}
 }
 
+func Test_MyDB(t *testing.T) {
+	opts := DefaultOptions()
+	db, err := Open("./mydata", nil, nil, opts)
+	defer db.Close()
+
+	if err != nil {
+		fmt.Println("Error to open DB:", err.Error())
+		os.Exit(-1)
+	}
+
+	app := db.Appender()
+	lbs := labels.New(labels.Label{"dc", "bj"})
+	app.Add(lbs, 1,1)
+
+	// 提交数据
+	app.Commit()
+}
+
 // query runs a matcher query against the querier and fully expands its data.
+// 从TSDB中查询数据,传入查询条件，返回数据
 func query(t testing.TB, q storage.Querier, matchers ...*labels.Matcher) map[string][]tsdbutil.Sample {
 	ss := q.Select(false, nil, matchers...)
 	defer func() {

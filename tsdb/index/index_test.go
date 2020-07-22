@@ -128,6 +128,17 @@ func (m mockIndex) Series(ref uint64, lset *labels.Labels, chks *[]chunks.Meta) 
 	return nil
 }
 
+func Test_MyIndex(t *testing.T) {
+	wr, err := NewWriter(context.Background(), "test_index")
+	if err != nil {
+		fmt.Printf("Error to create writer:%s \n", err.Error())
+		return
+	}
+	wr.AddSymbol("name")
+
+	wr.Close()
+}
+
 func TestIndexRW_Create_Open(t *testing.T) {
 	dir, err := ioutil.TempDir("", "test_index_create")
 	testutil.Ok(t, err)

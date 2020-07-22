@@ -1590,11 +1590,13 @@ func (h *headIndexReader) LabelNames() ([]string, error) {
 }
 
 // Postings returns the postings list iterator for the label pairs.
+// 传入Tag key value，搜索数据
 func (h *headIndexReader) Postings(name string, values ...string) (index.Postings, error) {
 	res := make([]index.Postings, 0, len(values))
 	for _, value := range values {
 		res = append(res, h.head.postings.Get(name, value))
 	}
+	// 所有的id,求交集
 	return index.Merge(res...), nil
 }
 

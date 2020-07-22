@@ -14,6 +14,8 @@
 package v1
 
 import (
+	"bufio"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"math"
@@ -186,6 +188,7 @@ type API struct {
 	globalURLOptions      GlobalURLOptions
 
 	db                        TSDBAdminStats
+	append                    storage.Appendable
 	dbDir                     string
 	enableAdmin               bool
 	logger                    log.Logger
@@ -206,6 +209,7 @@ func init() {
 func NewAPI(
 	qe *promql.Engine,
 	q storage.SampleAndChunkQueryable,
+	append     storage.Appendable,
 	tr func(context.Context) TargetRetriever,
 	ar func(context.Context) AlertmanagerRetriever,
 	configFunc func() config.Config,
@@ -227,6 +231,7 @@ func NewAPI(
 	return &API{
 		QueryEngine:           qe,
 		Queryable:             q,
+		append: append,
 		targetRetriever:       tr,
 		alertmanagerRetriever: ar,
 
@@ -321,6 +326,8 @@ func (api *API) Register(r *route.Router) {
 	r.Put("/admin/tsdb/clean_tombstones", wrap(api.cleanTombstones))
 	r.Put("/admin/tsdb/snapshot", wrap(api.snapshot))
 
+	// Put APIs
+	r.Post("/put", wrap(api.putSample))
 }
 
 type queryData struct {
@@ -1382,6 +1389,77 @@ func filterExtLabelsFromMatchers(pbMatchers []*prompb.LabelMatcher, externalLabe
 	}
 
 	return filteredMatchers, nil
+}
+
+type PutSample struct {
+	Metric string				`json:"metric"`
+	Tags map[string]string		`json:"tags,omitempty"`
+	TimeStamp int64				`json:"timestamp,omitempty"`
+	Value float64				`json:"value,omitempty"`
+}
+
+
+// Put data
+func (api *API) putSample(r *http.Request) apiFuncResult {
+	defer r.Body.Close()
+	// Wrap reader if it's gzip encoded.
+	var br *bufio.Reader
+
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(r.Body)
+		defer zr.Close()
+		if err != nil {
+			return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
+		}
+
+		br = bufio.NewReader(zr)
+	} else {
+		br = bufio.NewReader(r.Body)
+	}
+
+	f, err := br.Peek(1)
+	if err != nil || len(f) != 1 {
+		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
+	}
+
+	// Peek to see if this is a JSON array.
+	var multi bool
+	switch f[0] {
+	case '{':
+	case '[':
+		multi = true
+	default:
+		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
+	}
+
+
+	dec := jsoniter.NewDecoder(br)
+	dps := make([]*PutSample, 1)
+	if multi {
+		err = dec.Decode(&dps)
+	} else {
+		err = dec.Decode(&dps[0])
+	}
+
+	if err != nil {
+		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
+	}
+
+	app := api.append.Appender()
+	for _, dp := range dps {
+		if dp.TimeStamp == 0 {
+			dp.TimeStamp = time.Now().UnixNano() / 1e6
+		}
+		var lset labels.Labels
+		for k, v := range dp.Tags {
+			lset = append(lset, labels.Label{k, v})
+		}
+		lset = append(lset, labels.Label{labels.MetricName, dp.Metric})
+		app.Add(lset, dp.TimeStamp, dp.Value)
+	}
+
+	app.Commit()
+	return apiFuncResult{nil, nil, nil, nil}
 }
 
 func (api *API) deleteSeries(r *http.Request) apiFuncResult {
