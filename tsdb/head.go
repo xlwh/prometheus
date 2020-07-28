@@ -401,6 +401,7 @@ func (h *Head) updateMinMaxTime(mint, maxt int64) {
 	}
 }
 
+// 加载wal 日志中的数据
 func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks map[uint64][]*mmappedChunk) (err error) {
 	// Track number of samples that referenced a series we don't know about
 	// for error reporting.
@@ -462,12 +463,13 @@ func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks 
 		}(inputs[i], outputs[i])
 	}
 
+	// 读取数据
 	go func() {
 		defer close(decoded)
 		for r.Next() {
 			rec := r.Record()
 			switch dec.Type(rec) {
-			case record.Series:
+			case record.Series: // meta
 				series := seriesPool.Get().([]record.RefSeries)[:0]
 				series, err = dec.Series(rec, series)
 				if err != nil {
@@ -479,7 +481,7 @@ func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks 
 					return
 				}
 				decoded <- series
-			case record.Samples:
+			case record.Samples: // 数据点
 				samples := samplesPool.Get().([]record.RefSample)[:0]
 				samples, err = dec.Samples(rec, samples)
 				if err != nil {
@@ -491,7 +493,7 @@ func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks 
 					return
 				}
 				decoded <- samples
-			case record.Tombstones:
+			case record.Tombstones: // 墓碑
 				tstones := tstonesPool.Get().([]tombstones.Stone)[:0]
 				tstones, err = dec.Tombstones(rec, tstones)
 				if err != nil {
@@ -657,12 +659,14 @@ func (h *Head) Init(minValidTime int64) error {
 	}
 
 	// Backfill the checkpoint first if it exists.
+	// 重启的时候读取检查点
 	dir, startFrom, err := wal.LastCheckpoint(h.wal.Dir())
 	if err != nil && err != record.ErrNotFound {
 		return errors.Wrap(err, "find last checkpoint")
 	}
 	multiRef := map[uint64]uint64{}
 	if err == nil {
+		// 打开wal 日志
 		sr, err := wal.NewSegmentsReader(dir)
 		if err != nil {
 			return errors.Wrap(err, "open checkpoint")
@@ -1150,6 +1154,7 @@ func (a *headAppender) AddFast(ref uint64, t int64, v float64) error {
 	return nil
 }
 
+// 写wal日志
 func (a *headAppender) log() error {
 	if a.head.wal == nil {
 		return nil

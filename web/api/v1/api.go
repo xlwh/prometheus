@@ -18,6 +18,8 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"math"
 	"math/rand"
 	"net"
@@ -174,8 +176,8 @@ type TSDBAdminStats interface {
 // API can register a set of endpoints in a router and handle
 // them using the provided storage and query engine.
 type API struct {
-	// TODO(bwplotka): Change to SampleAndChunkQueryable in next PR.
-	Queryable   storage.Queryable
+	// 上面的这两个是核心，其他的一般啦
+	Queryable   storage.SampleAndChunkQueryable
 	QueryEngine *promql.Engine
 
 	targetRetriever       func(context.Context) TargetRetriever
@@ -392,6 +394,7 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 	}, nil, res.Warnings, qry.Close}
 }
 
+// 常用的时序查询接口
 func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 	start, err := parseTime(r.FormValue("start"))
 	if err != nil {
@@ -439,6 +442,8 @@ func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 		defer cancel()
 	}
 
+	// 创建一个查询实例，由调用者传入数据查询接口和查询参数
+	// 查询引擎只是负责执行而已
 	qry, err := api.QueryEngine.NewRangeQuery(api.Queryable, r.FormValue("query"), start, end, step)
 	if err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, err}, nil, nil}
@@ -454,6 +459,7 @@ func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 
 	ctx = httputil.ContextFromRequest(ctx, r)
 
+	// 执行查询和计算
 	res := qry.Exec(ctx)
 	if res.Err != nil {
 		return apiFuncResult{nil, returnAPIError(res.Err), res.Warnings, qry.Close}
@@ -1416,46 +1422,36 @@ func (api *API) putSample(r *http.Request) apiFuncResult {
 		br = bufio.NewReader(r.Body)
 	}
 
-	f, err := br.Peek(1)
-	if err != nil || len(f) != 1 {
-		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
-	}
-
-	// Peek to see if this is a JSON array.
-	var multi bool
-	switch f[0] {
-	case '{':
-	case '[':
-		multi = true
-	default:
-		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
-	}
-
-	dec := jsoniter.NewDecoder(br)
-	dps := make([]*PutSample, 1)
-	if multi {
-		err = dec.Decode(&dps)
-	} else {
-		err = dec.Decode(&dps[0])
-	}
-
+	b, err := ioutil.ReadAll(br)
 	if err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
 	}
 
-	app := api.append.Appender()
-	for _, dp := range dps {
-		if dp.TimeStamp == 0 {
-			dp.TimeStamp = time.Now().UnixNano() / 1e6
-		}
-		var lset labels.Labels
-		for k, v := range dp.Tags {
-			lset = append(lset, labels.Label{k, v})
-		}
-		lset = append(lset, labels.Label{labels.MetricName, dp.Metric})
-		app.Add(lset, dp.TimeStamp, dp.Value)
-	}
+	// level.Info(api.logger).Log("msg", "recv put", string(b))
 
+	p := textparse.NewPromParser(b)
+	app := api.append.Appender()
+Loop:
+	for {
+		var res labels.Labels
+		et, err := p.Next()
+		if err == io.EOF {
+			break Loop
+		}
+
+		switch et {
+		case textparse.EntrySeries:
+			_, ts, v := p.Series()
+			p.Metric(&res)
+			if ts == nil {
+				app.Add(res, time.Now().UnixNano()/1e6, v)
+			} else {
+				app.Add(res, *ts, v)
+			}
+		default:
+			continue
+		}
+	}
 	app.Commit()
 	return apiFuncResult{nil, nil, nil, nil}
 }

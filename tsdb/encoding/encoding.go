@@ -190,6 +190,7 @@ func (d *Decbuf) UvarintStr() string {
 // The return value becomes invalid if the byte slice goes away.
 // Compared to UvarintStr, this avoid allocations.
 func (d *Decbuf) UvarintBytes() []byte {
+	// 数据长度
 	l := d.Uvarint64()
 	if d.E != nil {
 		return []byte{}
@@ -237,7 +238,9 @@ func (d *Decbuf) Be64() uint64 {
 		d.E = ErrInvalidSize
 		return 0
 	}
+	// 读取八位
 	x := binary.BigEndian.Uint64(d.B)
+	// 读取八个字节
 	d.B = d.B[8:]
 	return x
 }

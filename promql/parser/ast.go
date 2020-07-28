@@ -56,6 +56,7 @@ type Statement interface {
 
 // EvalStmt holds an expression and information on the range it should
 // be evaluated on.
+// 解析完成后的查询语法树
 type EvalStmt struct {
 	Expr Expr // Expression to be evaluated.
 

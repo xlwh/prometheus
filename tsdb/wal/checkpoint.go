@@ -44,6 +44,7 @@ type CheckpointStats struct {
 
 // LastCheckpoint returns the directory name and index of the most recent checkpoint.
 // If dir does not contain any checkpoints, ErrNotFound is returned.
+// 返回最新检查点的目录和索引名称
 func LastCheckpoint(dir string) (string, int, error) {
 	checkpoints, err := listCheckpoints(dir)
 	if err != nil {

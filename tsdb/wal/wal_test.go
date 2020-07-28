@@ -452,11 +452,10 @@ func BenchmarkWAL_LogBatched(b *testing.B) {
 	}
 }
 
-
 func Test_MyLogWrite(t *testing.T) {
 	w, err := New(nil, nil, "/Users/zhanghongbin/workspace/prometheus/tsdb/mydata/mylog", false)
 	if err != nil {
-		fmt.Printf("Error to open log:%s",  err.Error())
+		fmt.Printf("Error to open log:%s", err.Error())
 		return
 	}
 
@@ -482,6 +481,29 @@ func Test_MyLogRead(t *testing.T) {
 		fmt.Println("Read data:", string(data))
 	}
 	sr.Close()
+}
+
+func Test_OpenWal(t *testing.T) {
+	f, err := os.Open("/Users/zhanghongbin/workspace/prometheus/tsdb/mydata/mylog/00000000")
+	if err != nil {
+		fmt.Sprintf("Error to open file:%s", err.Error())
+		os.Exit(-1)
+	}
+
+	var buf []byte = make([]byte, 0, 1024)
+	var off int
+	n, err := f.Read(buf)
+	if err != nil {
+		fmt.Println("Read file error", err.Error())
+		os.Exit(-1)
+	}
+
+	// 往前偏移一下
+	off += n
+
+	_, err = f.ReadAt(buf, 1)
+
+	fmt.Println("read:", buf)
 }
 
 // 写日志，进行性能压测

@@ -1057,6 +1057,31 @@ func TestScrapeLoopAppendCacheEntryButErrNotFound(t *testing.T) {
 	testutil.Equals(t, expected, app.result)
 }
 
+func Test_MyParse(t *testing.T) {
+	var s = `# TYPE cpu_usage_user gauge
+cpu_usage_user{hostname="host_0",region="ap-northeast-1",datacenter="ap-northeast-1a",rack="72",os="Ubuntu16.10",arch="x86",team="CHI",service="10",service_version="0",service_environment="test"} 60.4660287979619540 1640995200000`
+	p := textparse.NewPromParser([]byte(s))
+	var res labels.Labels
+	for {
+		et, err := p.Next()
+		if err == io.EOF {
+			break
+		}
+		testutil.Ok(t, err)
+
+		switch et {
+		case textparse.EntrySeries:
+			m, ts, v := p.Series()
+
+			p.Metric(&res)
+			fmt.Println(string(m), ts, v, res)
+			res = res[:0]
+		default:
+			continue
+		}
+	}
+}
+
 func TestScrapeLoopAppendSampleLimit(t *testing.T) {
 	resApp := &collectResultAppender{}
 	app := &limitAppender{Appender: resApp, limit: 1}

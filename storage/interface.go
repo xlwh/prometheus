@@ -11,6 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// 存储接口的一些封装
+// 有关数据的一些接口都在这里了
 package storage
 
 import (
@@ -25,19 +27,21 @@ import (
 
 // The errors exposed.
 var (
-	ErrNotFound                    = errors.New("not found")
-	ErrOutOfOrderSample            = errors.New("out of order sample")
-	ErrDuplicateSampleForTimestamp = errors.New("duplicate sample for timestamp")
-	ErrOutOfBounds                 = errors.New("out of bounds")
+	ErrNotFound                    = errors.New("not found")                      // 可能是从存储里面没找到数据
+	ErrOutOfOrderSample            = errors.New("out of order sample")            // 乱序
+	ErrDuplicateSampleForTimestamp = errors.New("duplicate sample for timestamp") // 时间戳一样
+	ErrOutOfBounds                 = errors.New("out of bounds")                  // 传入老的数据
 )
 
 // Appendable allows creating appenders.
+// 数据写入
 type Appendable interface {
 	// Appender returns a new appender for the storage.
 	Appender() Appender
 }
 
 // SampleAndChunkQueryable allows retrieving samples as well as encoded samples in form of chunks.
+// 数据查询
 type SampleAndChunkQueryable interface {
 	Queryable
 	ChunkQueryable
@@ -50,6 +54,7 @@ type Storage interface {
 	Appendable
 
 	// StartTime returns the oldest timestamp stored in the storage.
+	// 存储启动的时间？？？
 	StartTime() (int64, error)
 
 	// Close closes the storage and all its underlying resources.
@@ -82,11 +87,12 @@ type ChunkQueryable interface {
 
 // ChunkQuerier provides querying access over time series data of a fixed time range.
 type ChunkQuerier interface {
-	LabelQuerier
+	LabelQuerier // Tag 查询接口
 
 	// Select returns a set of series that matches the given label matchers.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.
 	// It allows passing hints that can help in optimising select, but it's up to implementation how this is used if used at all.
+	// 不建议进行排序
 	Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) ChunkSeriesSet
 }
 
@@ -105,6 +111,7 @@ type LabelQuerier interface {
 
 // SelectHints specifies hints passed for data selections.
 // This is used only as an option for implementation to use.
+// 查询的选项
 type SelectHints struct {
 	Start int64 // Start time in milliseconds for this select.
 	End   int64 // End time in milliseconds for this select.
@@ -190,11 +197,6 @@ func ErrSeriesSet(err error) SeriesSet {
 }
 
 var emptyChunkSeriesSet = errChunkSeriesSet{}
-
-// EmptyChunkSeriesSet returns a chunk series set that's always empty.
-func EmptyChunkSeriesSet() ChunkSeriesSet {
-	return emptyChunkSeriesSet
-}
 
 type errChunkSeriesSet struct {
 	err error

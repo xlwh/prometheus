@@ -383,6 +383,7 @@ func main() {
 
 		scrapeManager = scrape.NewManager(log.With(logger, "component", "scrape manager"), fanoutStorage)
 
+		// 查询引擎里面包了这么多东西
 		opts = promql.EngineOpts{
 			Logger:             log.With(logger, "component", "query engine"),
 			Reg:                prometheus.DefaultRegisterer,
@@ -392,6 +393,7 @@ func main() {
 			LookbackDelta:      time.Duration(cfg.lookbackDelta),
 		}
 
+		// 启动时创建了查询引擎
 		queryEngine = promql.NewEngine(opts)
 
 		ruleManager = rules.NewManager(&rules.ManagerOptions{
