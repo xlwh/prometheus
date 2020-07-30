@@ -67,6 +67,7 @@ func (e *Encbuf) PutVarint64(x int64) {
 
 // PutUvarintStr writes a string to the buffer prefixed by its varint length (in bytes!).
 func (e *Encbuf) PutUvarintStr(s string) {
+	// 直接转的方式，节省内存
 	b := *(*[]byte)(unsafe.Pointer(&s))
 	e.PutUvarint(len(b))
 	e.PutString(s)
@@ -108,7 +109,13 @@ func NewDecbufAt(bs ByteSlice, off int, castagnoliTable *crc32.Table) Decbuf {
 	if bs.Len() < off+4 {
 		return Decbuf{E: ErrInvalidSize}
 	}
+	// ByteSlice支持range读取
+	// 先读取长度uint32 = 4byte
 	b := bs.Range(off, off+4)
+	// 我们的CPU和内存一般应该是用的小端排序，这里能不能直接用小端排序
+	// 方便直接把数据丢到内存和cpu中做计算呢？
+	// 是否可以提高一些性能呢？？
+	// x86 系列是小端排序，
 	l := int(binary.BigEndian.Uint32(b))
 
 	if bs.Len() < off+4+l+4 {
@@ -116,11 +123,14 @@ func NewDecbufAt(bs ByteSlice, off int, castagnoliTable *crc32.Table) Decbuf {
 	}
 
 	// Load bytes holding the contents plus a CRC32 checksum.
+	// 读取到数据
 	b = bs.Range(off+4, off+4+l+4)
+	// 解析数据
 	dec := Decbuf{B: b[:len(b)-4]}
 
 	if castagnoliTable != nil {
 
+		// 在数据包的最后4个byte,放的是crc校验码
 		if exp := binary.BigEndian.Uint32(b[len(b)-4:]); dec.Crc32(castagnoliTable) != exp {
 			return Decbuf{E: ErrInvalidChecksum}
 		}
@@ -131,14 +141,52 @@ func NewDecbufAt(bs ByteSlice, off int, castagnoliTable *crc32.Table) Decbuf {
 // NewDecbufUvarintAt returns a new decoding buffer. It expects the first bytes
 // after offset to hold the uvarint-encoded buffers length, followed by the contents and the expected
 // checksum.
+// 返回一个新的解码缓冲区
+/*
+┌──────────────────────────────────────────────────────────────────────────┐
+│ len <uvarint>                                                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│ ┌──────────────────────────────────────────────────────────────────────┐ │
+│ │                     labels count <uvarint64>                         │ │
+│ ├──────────────────────────────────────────────────────────────────────┤ │
+│ │              ┌────────────────────────────────────────────┐          │ │
+│ │              │ ref(l_i.name) <uvarint32>                  │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ ref(l_i.value) <uvarint32>                 │          │ │
+│ │              └────────────────────────────────────────────┘          │ │
+│ │                             ...                                      │ │
+│ ├──────────────────────────────────────────────────────────────────────┤ │
+│ │                     chunks count <uvarint64>                         │ │
+│ ├──────────────────────────────────────────────────────────────────────┤ │
+│ │              ┌────────────────────────────────────────────┐          │ │
+│ │              │ c_0.mint <varint64>                        │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ c_0.maxt - c_0.mint <uvarint64>            │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ ref(c_0.data) <uvarint64>                  │          │ │
+│ │              └────────────────────────────────────────────┘          │ │
+│ │              ┌────────────────────────────────────────────┐          │ │
+│ │              │ c_i.mint - c_i-1.maxt <uvarint64>          │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ c_i.maxt - c_i.mint <uvarint64>            │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ ref(c_i.data) - ref(c_i-1.data) <varint64> │          │ │
+│ │              └────────────────────────────────────────────┘          │ │
+│ │                             ...                                      │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+├──────────────────────────────────────────────────────────────────────────┤
+│ CRC32 <4b>                                                               │
+└──────────────────────────────────────────────────────────────────────────┘
+*/
 func NewDecbufUvarintAt(bs ByteSlice, off int, castagnoliTable *crc32.Table) Decbuf {
 	// We never have to access this method at the far end of the byte slice. Thus just checking
 	// against the MaxVarintLen32 is sufficient.
+	// 简单校验数据合法性
 	if bs.Len() < off+binary.MaxVarintLen32 {
 		return Decbuf{E: ErrInvalidSize}
 	}
+	// 读取len字段
 	b := bs.Range(off, off+binary.MaxVarintLen32)
-
 	l, n := binary.Uvarint(b)
 	if n <= 0 || n > binary.MaxVarintLen32 {
 		return Decbuf{E: errors.Errorf("invalid uvarint %d", n)}
@@ -149,9 +197,11 @@ func NewDecbufUvarintAt(bs ByteSlice, off int, castagnoliTable *crc32.Table) Dec
 	}
 
 	// Load bytes holding the contents plus a CRC32 checksum.
+	// 读取数据
 	b = bs.Range(off+n, off+n+int(l)+4)
 	dec := Decbuf{B: b[:len(b)-4]}
 
+	// 校验最后4个字节的crc
 	if dec.Crc32(castagnoliTable) != binary.BigEndian.Uint32(b[len(b)-4:]) {
 		return Decbuf{E: ErrInvalidChecksum}
 	}

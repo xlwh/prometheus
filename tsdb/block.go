@@ -250,12 +250,14 @@ type Block struct {
 	pendingReaders sync.WaitGroup
 
 	dir  string
-	meta BlockMeta
+	meta BlockMeta // 可以知道这个block里面有多少哪个分片的数据，多少线，多少个点
 
 	// Symbol Table Size in bytes.
 	// We maintain this variable to avoid recalculation every time.
-	symbolTableSize uint64
+	symbolTableSize uint64 // 符号表的大小
 
+	// 三个读取器，分别对应chunk，index，墓碑
+	// meta文件已经加载过了，不需要加载
 	chunkr     ChunkReader
 	indexr     IndexReader
 	tombstones tombstones.Reader
@@ -268,8 +270,8 @@ type Block struct {
 	numBytesMeta      int64
 }
 
-// OpenBlock opens the block in the directory. It can be passed a chunk pool, which is used
-// to instantiate chunk structs.
+// OpenBlock opens the block in the directory. It can be passed a chunk pool, which is used to instantiate chunk structs.
+// OpenBlock打开目录中的块。 可以将其传递给块池，该池用于实例化块结构。
 func OpenBlock(logger log.Logger, dir string, pool chunkenc.Pool) (pb *Block, err error) {
 	if logger == nil {
 		logger = log.NewNopLogger()
@@ -283,23 +285,32 @@ func OpenBlock(logger log.Logger, dir string, pool chunkenc.Pool) (pb *Block, er
 			err = merr.Err()
 		}
 	}()
+
+	// 读取meta
 	meta, sizeMeta, err := readMetaFile(dir)
 	if err != nil {
 		return nil, err
 	}
 
+	// 把磁盘上的所有的chunk在内存中构建mmp映射，加速查询
 	cr, err := chunks.NewDirReader(chunkDir(dir), pool)
 	if err != nil {
 		return nil, err
 	}
 	closers = append(closers, cr)
 
+	// 读取和构建索引
 	ir, err := index.NewFileReader(filepath.Join(dir, indexFilename))
 	if err != nil {
 		return nil, err
 	}
 	closers = append(closers, ir)
 
+	// 读取墓碑数据,墓碑数据是放在内存中的，所以当删除了很多数据后，墓碑数据可能会很大
+	/*
+			intvlGroups map[uint64]Intervals
+		    mtx         sync.RWMutex
+	*/
 	tr, sizeTomb, err := tombstones.ReadTombstones(dir)
 	if err != nil {
 		return nil, err
@@ -489,6 +500,7 @@ func (pb *Block) Delete(mint, maxt int64, ms ...*labels.Matcher) error {
 		return ErrClosing
 	}
 
+	// 返回匹配的ref，1，2
 	p, err := PostingsForMatchers(pb.indexr, ms...)
 	if err != nil {
 		return errors.Wrap(err, "select series")

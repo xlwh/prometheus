@@ -646,9 +646,11 @@ func TestScrapeLoopSeriesAdded(t *testing.T) {
 	s := teststorage.New(t)
 	defer s.Close()
 
+	// 存储接口
 	app := s.Appender()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// 创建一个抓取服务
 	sl := newScrapeLoop(ctx,
 		&testScraper{},
 		nil, nil,
@@ -1397,11 +1399,13 @@ func TestScrapeLoopOutOfBoundsTimeError(t *testing.T) {
 }
 
 func TestTargetScraperScrapeOK(t *testing.T) {
+	// 超时时间
 	const (
 		configTimeout   = 1500 * time.Millisecond
 		expectedTimeout = "1.500000"
 	)
 
+	// 创建一个Http 服务
 	server := httptest.NewServer(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			accept := r.Header.Get("Accept")
@@ -1441,6 +1445,74 @@ func TestTargetScraperScrapeOK(t *testing.T) {
 	testutil.Ok(t, err)
 	testutil.Equals(t, "text/plain; version=0.0.4", contentType)
 	testutil.Equals(t, "metric_a 1\nmetric_b 2\n", buf.String())
+}
+
+func Test_MyTarget(t *testing.T) {
+	const (
+		configTimeout   = 1500 * time.Millisecond
+		expectedTimeout = "1.500000"
+	)
+
+	server := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			accept := r.Header.Get("Accept")
+			if !strings.HasPrefix(accept, "application/openmetrics-text;") {
+				t.Errorf("Expected Accept header to prefer application/openmetrics-text, got %q", accept)
+			}
+
+			timeout := r.Header.Get("X-Prometheus-Scrape-Timeout-Seconds")
+			if timeout != expectedTimeout {
+				t.Errorf("Expected scrape timeout header %q, got %q", expectedTimeout, timeout)
+			}
+
+			w.Header().Set("Content-Type", `text/plain; version=0.0.4`)
+			w.Write([]byte("metric_a 1\nmetric_b 2\n"))
+		}),
+	)
+	defer server.Close()
+
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		panic(err)
+	}
+
+	ts := &targetScraper{
+		Target: &Target{
+			labels: labels.FromStrings(
+				model.SchemeLabel, serverURL.Scheme,
+				model.AddressLabel, serverURL.Host,
+			),
+		},
+		client:  http.DefaultClient,
+		timeout: configTimeout,
+	}
+
+	s := teststorage.New(t)
+	defer s.Close()
+
+	app := s.Appender()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sl := newScrapeLoop(ctx,
+		ts,
+		nil, nil,
+		nopMutator,
+		nopMutator,
+		func() storage.Appender { return app },
+		nil,
+		0,
+		true,
+	)
+	defer cancel()
+
+	var buf bytes.Buffer
+	contextType, err := ts.scrape(context.Background(), &buf)
+	if err != nil {
+		fmt.Println("Error to scrap:", err.Error())
+		return
+	}
+
+	sl.append(buf.Bytes(), contextType, time.Now())
 }
 
 func TestTargetScrapeScrapeCancel(t *testing.T) {
@@ -1534,7 +1606,8 @@ type testScraper struct {
 	lastDuration time.Duration
 	lastError    error
 
-	scrapeErr  error
+	scrapeErr error
+	// 抓取数据的接口
 	scrapeFunc func(context.Context, io.Writer) error
 }
 

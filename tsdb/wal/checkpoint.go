@@ -88,6 +88,7 @@ const checkpointPrefix = "checkpoint."
 // segmented format as the original WAL itself.
 // This makes it easy to read it through the WAL package and concatenate
 // it with the original WAL.
+// 每次Compaction的时候，会进行老数据删除，产生checkpoint
 func Checkpoint(w *WAL, from, to int, keep func(id uint64) bool, mint int64) (*CheckpointStats, error) {
 	stats := &CheckpointStats{}
 	var sgmReader io.ReadCloser
@@ -95,10 +96,12 @@ func Checkpoint(w *WAL, from, to int, keep func(id uint64) bool, mint int64) (*C
 	{
 
 		var sgmRange []SegmentRange
+		// 目录下可能会有多个checkpoint，只返回最后一个checkpoint的idx
 		dir, idx, err := LastCheckpoint(w.Dir())
 		if err != nil && err != record.ErrNotFound {
 			return nil, errors.Wrap(err, "find last checkpoint")
 		}
+		// 如果目录下还没有checkpoint
 		last := idx + 1
 		if err == nil {
 			if from > last {

@@ -846,6 +846,7 @@ func (h *Head) Truncate(mint int64) (err error) {
 		}
 		return errors.Wrap(err, "create checkpoint")
 	}
+	// 删除wal log
 	if err := h.wal.Truncate(last + 1); err != nil {
 		// If truncating fails, we'll just try again at the next checkpoint.
 		// Leftover segments will just be ignored in the future if there's a checkpoint
@@ -1166,6 +1167,7 @@ func (a *headAppender) log() error {
 	var rec []byte
 	var enc record.Encoder
 
+	// 写Meta
 	if len(a.series) > 0 {
 		rec = enc.Series(a.series, buf)
 		buf = rec[:0]
@@ -1174,6 +1176,7 @@ func (a *headAppender) log() error {
 			return errors.Wrap(err, "log series")
 		}
 	}
+	// 写数据
 	if len(a.samples) > 0 {
 		rec = enc.Samples(a.samples, buf)
 		buf = rec[:0]
@@ -1199,6 +1202,7 @@ func (a *headAppender) Commit() error {
 
 	total := len(a.samples)
 	var series *memSeries
+	// 遍历内存中的所有数据点
 	for i, s := range a.samples {
 		series = a.sampleSeries[i]
 		series.Lock()

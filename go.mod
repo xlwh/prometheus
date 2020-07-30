@@ -40,6 +40,7 @@ require (
 	github.com/hashicorp/consul/api v1.4.0
 	github.com/hashicorp/go-hclog v0.12.2 // indirect
 	github.com/hashicorp/go-immutable-radix v1.2.0 // indirect
+	github.com/hashicorp/go-sockaddr v1.0.2
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/hashicorp/serf v0.9.0 // indirect
 	github.com/influxdata/influxdb v1.8.0

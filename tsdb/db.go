@@ -133,9 +133,10 @@ type DB struct {
 	compactor Compactor
 
 	// Mutex for that must be held when modifying the general block layout.
-	mtx    sync.RWMutex
+	mtx sync.RWMutex
+	// 压缩完，在盘上的block的映射，维护一些索引信息
 	blocks []*Block
-
+	// 内存中待压缩的数据
 	head *Head
 
 	compactc chan struct{}
@@ -359,6 +360,7 @@ func (db *DBReadOnly) Querier(ctx context.Context, mint, maxt int64) (storage.Qu
 		return nil, ErrClosed
 	default:
 	}
+	// 查询会返回所有的blocks
 	blockReaders, err := db.Blocks()
 	if err != nil {
 		return nil, err
@@ -427,22 +429,27 @@ func (db *DBReadOnly) ChunkQuerier(context.Context, int64, int64) (storage.Chunk
 
 // Blocks returns a slice of block readers for persisted blocks.
 func (db *DBReadOnly) Blocks() ([]BlockReader, error) {
+	// 收到退出信号，要退出本次查询
 	select {
 	case <-db.closed:
 		return nil, ErrClosed
 	default:
 	}
+
+	// 把所有的bock打开，为啥不是先按照start end time 匹配一遍，拿到合适的block??
 	loadable, corrupted, err := openBlocks(db.logger, db.dir, nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	// Corrupted blocks that have been superseded by a loadable block can be safely ignored.
+	// 删除损坏的数据
 	for _, block := range loadable {
 		for _, b := range block.Meta().Compaction.Parents {
 			delete(corrupted, b.ULID)
 		}
 	}
+	// 损坏的数据，就不出处理了
 	if len(corrupted) > 0 {
 		for _, b := range loadable {
 			if err := b.Close(); err != nil {
@@ -460,6 +467,7 @@ func (db *DBReadOnly) Blocks() ([]BlockReader, error) {
 		return nil, nil
 	}
 
+	// 排好序
 	sort.Slice(loadable, func(i, j int) bool {
 		return loadable[i].Meta().MinTime < loadable[j].Meta().MinTime
 	})
@@ -468,6 +476,8 @@ func (db *DBReadOnly) Blocks() ([]BlockReader, error) {
 	for _, b := range loadable {
 		blockMetas = append(blockMetas, b.Meta())
 	}
+
+	// 按照实际来匹配
 	if overlaps := OverlappingBlocks(blockMetas); len(overlaps) > 0 {
 		level.Warn(db.logger).Log("msg", "Overlapping blocks found during opening", "detail", overlaps.String())
 	}
@@ -680,7 +690,9 @@ func (db *DB) run() {
 			db.metrics.compactionsTriggered.Inc()
 
 			db.autoCompactMtx.Lock()
+			// 只有开启了autoCompact，才能进行压缩。那么我们的head内存中的数据怎么办呢？？
 			if db.autoCompact {
+				// 进行数据的Compaction处理
 				if err := db.Compact(); err != nil {
 					level.Error(db.logger).Log("msg", "compaction failed", "err", err)
 					backoff = exponential(backoff, 1*time.Second, 1*time.Minute)
@@ -749,7 +761,7 @@ func (db *DB) Compact() (err error) {
 		if !db.head.compactable() {
 			break
 		}
-		mint := db.head.MinTime()
+		mint := db.head.MinTime() // 最小时间
 		maxt := rangeForTimestamp(mint, db.head.chunkRange)
 
 		// Wrap head into a range that bounds all reads to it.
@@ -778,23 +790,26 @@ func (db *DB) CompactHead(head *RangeHead) (err error) {
 
 // compactHead compacts the given the RangeHead.
 // The compaction mutex should be held before calling this method.
+// 压缩head
 func (db *DB) compactHead(head *RangeHead) (err error) {
 	// Add +1 millisecond to block maxt because block intervals are half-open: [b.MinTime, b.MaxTime).
 	// Because of this block intervals are always +1 than the total samples it includes.
 	maxt := head.MaxTime() + 1
+	// 进行Compaction，返回文件的uid
 	uid, err := db.compactor.Write(db.dir, head, head.MinTime(), maxt, nil)
 	if err != nil {
 		return errors.Wrap(err, "persist head block")
 	}
 
 	runtime.GC()
-
+	// 重新加载数据？？
 	if err := db.reload(); err != nil {
 		if err := os.RemoveAll(filepath.Join(db.dir, uid.String())); err != nil {
 			return errors.Wrapf(err, "delete persisted head block after failed db reload:%s", uid)
 		}
 		return errors.Wrap(err, "reload blocks")
 	}
+	// 删除wal log等
 	if (uid == ulid.ULID{}) {
 		// Compaction resulted in an empty block.
 		// Head truncating during db.reload() depends on the persisted blocks and
@@ -810,6 +825,7 @@ func (db *DB) compactHead(head *RangeHead) (err error) {
 
 // compactBlocks compacts all the eligible on-disk blocks.
 // The compaction mutex should be held before calling this method.
+// 对目录进行二次compaction
 func (db *DB) compactBlocks() (err error) {
 	// Check for compactions of multiple blocks.
 	for {
@@ -959,21 +975,25 @@ func (db *DB) reload() (err error) {
 }
 
 func openBlocks(l log.Logger, dir string, loaded []*Block, chunkPool chunkenc.Pool) (blocks []*Block, corrupted map[ulid.ULID]error, err error) {
+	// 扫描得到所有的block目录
 	bDirs, err := blockDirs(dir)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "find blocks")
 	}
 
+	// 记录损坏或者非法的数据和错误的原因
 	corrupted = make(map[ulid.ULID]error)
 	for _, bDir := range bDirs {
+		// 读meta
 		meta, _, err := readMetaFile(bDir)
 		if err != nil {
 			level.Error(l).Log("msg", "failed to read meta.json for a block", "dir", bDir, "err", err)
 			continue
 		}
 
-		// See if we already have the block in memory or open it otherwise.
+		// 看一下这个块在内存中是否已经被打开过了，没打开过的才会打开
 		block, open := getBlock(loaded, meta.ULID)
+		// 只有没加载过的，才会进行加载,加载构建内存索引和mmp
 		if !open {
 			block, err = OpenBlock(l, bDir, chunkPool)
 			if err != nil {
@@ -1181,6 +1201,7 @@ func OverlappingBlocks(bm []BlockMeta) Overlaps {
 	overlapGroups := Overlaps{}
 	for _, overlap := range overlaps {
 
+		// 根据时间范围判断，要查询那些块
 		minRange := TimeRange{Min: 0, Max: math.MaxInt64}
 		for _, b := range overlap {
 			if minRange.Max > b.MaxTime {

@@ -205,6 +205,7 @@ type Encoder struct {
 }
 
 // Series appends the encoded series to b and returns the resulting slice.
+// 把时间序列线进行编码，编码后写入到WAL log中
 func (e *Encoder) Series(series []RefSeries, b []byte) []byte {
 	buf := encoding.Encbuf{B: b}
 	buf.PutByte(byte(Series))

@@ -19,6 +19,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+// Prometheus自己做的mmp吧？？
+// 一次性把数据都加载到内存里面？？
 type MmapFile struct {
 	f *os.File
 	b []byte
@@ -38,6 +40,7 @@ func OpenMmapFileWithSize(path string, size int) (mf *MmapFile, retErr error) {
 			f.Close()
 		}
 	}()
+	// size <= 0，那么会读全部内容/
 	if size <= 0 {
 		info, err := f.Stat()
 		if err != nil {

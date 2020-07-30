@@ -15,6 +15,7 @@ package index
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io/ioutil"
@@ -177,9 +178,12 @@ func TestIndexRW_Postings(t *testing.T) {
 
 	fn := filepath.Join(dir, indexFilename)
 
+	// 传入一个文件句柄，打开一个index写入器
+	// 这个index可以写入Symbol、PostigsTable、TOC
 	iw, err := NewWriter(context.Background(), fn)
 	testutil.Ok(t, err)
 
+	// 构造4条线
 	series := []labels.Labels{
 		labels.FromStrings("a", "1", "b", "1"),
 		labels.FromStrings("a", "1", "b", "2"),
@@ -187,6 +191,7 @@ func TestIndexRW_Postings(t *testing.T) {
 		labels.FromStrings("a", "1", "b", "4"),
 	}
 
+	// 写入符号表，就是一些字符串，模仿的OpenTSDB
 	testutil.Ok(t, iw.AddSymbol("1"))
 	testutil.Ok(t, iw.AddSymbol("2"))
 	testutil.Ok(t, iw.AddSymbol("3"))
@@ -196,6 +201,7 @@ func TestIndexRW_Postings(t *testing.T) {
 
 	// Postings lists are only written if a series with the respective
 	// reference was added before.
+	// 写入时间线
 	testutil.Ok(t, iw.AddSeries(1, series[0]))
 	testutil.Ok(t, iw.AddSeries(2, series[1]))
 	testutil.Ok(t, iw.AddSeries(3, series[2]))
@@ -203,16 +209,20 @@ func TestIndexRW_Postings(t *testing.T) {
 
 	testutil.Ok(t, iw.Close())
 
+	// 读取数据,把磁盘上的一个索引文件mmp到内存中
 	ir, err := NewFileReader(fn)
 	testutil.Ok(t, err)
 
+	// 传入Tag，来搜索数据
 	p, err := ir.Postings("a", "1")
 	testutil.Ok(t, err)
 
 	var l labels.Labels
 	var c []chunks.Meta
 
+	// 遍历postings，找到合适的数据
 	for i := 0; p.Next(); i++ {
+		// 遍历postings，取出每个offset?还是ref
 		err := ir.Series(p.At(), &l, &c)
 
 		testutil.Ok(t, err)
@@ -224,6 +234,7 @@ func TestIndexRW_Postings(t *testing.T) {
 	// The label incides are no longer used, so test them by hand here.
 	labelIndices := map[string][]string{}
 	testutil.Ok(t, ReadOffsetTable(ir.b, ir.toc.LabelIndicesTable, func(key []string, off uint64, _ int) error {
+		// 读取偏移表，找到合适的位置，调用以下的代码
 		if len(key) != 1 {
 			return errors.Errorf("unexpected key length for label indices table %d", len(key))
 		}
@@ -250,6 +261,67 @@ func TestIndexRW_Postings(t *testing.T) {
 	}, labelIndices)
 
 	testutil.Ok(t, ir.Close())
+}
+
+func Test_MyIndexNew(t *testing.T) {
+	iw, err := NewWriter(context.Background(), "/Users/zhanghongbin/workspace/prometheus/myindex.idx")
+	testutil.Ok(t, err)
+
+	allSeries := []labels.Labels{
+		labels.FromStrings("__metric__", "cpu_use", "dc", "bj"),
+		labels.FromStrings("__metric__", "cpu_use", "dc", "nj"),
+		labels.FromStrings("__metric__", "cpu_use", "dc", "sh"),
+	}
+
+	symbols := []string{"__metric__", "cpu_use", "dc", "bj", "nj", "sh", "gz"}
+	// 需要保证写入的符号表有序
+	sort.Strings(symbols)
+
+	for _, sym := range symbols {
+		err = iw.AddSymbol(sym)
+		testutil.Ok(t, err)
+	}
+
+	// 写入的Series也要有序
+	for i, s := range allSeries {
+		err = iw.AddSeries(uint64(i+1), s)
+		testutil.Ok(t, err)
+	}
+
+	// 关闭索引
+	iw.Close()
+}
+
+// 磁盘存储，各种信息传递，其实就是在玩这堆二进制
+func Test_binary(t *testing.T) {
+	buf := make([]byte, 1024)
+	str := []byte("hello, world")
+	oldLen := uint16(len(str))
+	// 两字节，存储中最小的存储单位就是字节，通常1byte = 8bit
+	// uint16 = 2byte = 16bit
+	binary.BigEndian.PutUint16(buf, oldLen)
+
+	// 写入数据
+	for i, b := range str {
+		buf[i+2] = b
+	}
+
+	newLen := binary.BigEndian.Uint16(buf[:2])
+	fmt.Println(oldLen, newLen)
+	fmt.Println(string(buf[2 : newLen+2]))
+}
+
+func Test_MyIndexRd(t *testing.T) {
+	ir, err := NewFileReader("/Users/zhanghongbin/workspace/prometheus/myindex.idx")
+	testutil.Ok(t, err)
+
+	/*
+		3 dc
+		0 __metric__
+	*/
+	for k, v := range ir.nameSymbols {
+		fmt.Println(k, v)
+	}
 }
 
 func TestPostingsMany(t *testing.T) {

@@ -14,6 +14,8 @@
 package tsdb
 
 import (
+	"github.com/prometheus/common/log"
+	"github.com/prometheus/prometheus/util/strutil"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -95,12 +97,14 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*lab
 		return q.blocks[0].Select(sortSeries, hints, ms...)
 	}
 
+	// 遍历一堆block，依次搜索，这里是不是可以开go routine来搜索??
 	ss := make([]storage.SeriesSet, len(q.blocks))
 	for i, b := range q.blocks {
 		// We have to sort if blocks > 1 as MergedSeriesSet requires it.
+		// 必须要进行排序，方便进行数据merge
 		ss[i] = b.Select(true, hints, ms...)
 	}
-
+	// 多个block的数据进行merge
 	return NewMergedSeriesSet(ss)
 }
 
@@ -175,10 +179,12 @@ type blockQuerier struct {
 	mint, maxt int64
 }
 
+// 搜索时候数据
 func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) storage.SeriesSet {
 	var base storage.DeprecatedChunkSeriesSet
 	var err error
 
+	// 两种搜索方法，一种是排序的,一种是非排序的
 	if sortSeries {
 		base, err = LookupChunkSeriesSorted(q.index, q.tombstones, ms...)
 	} else {
@@ -188,18 +194,22 @@ func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ..
 		return storage.ErrSeriesSet(err)
 	}
 
+	log.Info("倒排索引搜索结束，返回ref列表")
+
 	mint := q.mint
 	maxt := q.maxt
 	if hints != nil {
 		mint = hints.Start
 		maxt = hints.End
 	}
+
 	return &blockSeriesSet{
+
 		set: &populatedChunkSeries{
-			set:    base,
-			chunks: q.chunks,
-			mint:   mint,
-			maxt:   maxt,
+			set:    base,     // 一个迭代器，每次next，往下一条线，返回ref, labels, chunk meta
+			chunks: q.chunks, // ChunkReader,是一个block上的chunk的mmp映射
+			mint:   mint,     // 开始时间
+			maxt:   maxt,     // 结束时间
 		},
 
 		mint: mint,
@@ -288,6 +298,7 @@ func findSetMatches(pattern string) []string {
 
 // PostingsForMatchers assembles a single postings iterator against the index reader
 // based on the given matchers. The resulting postings are not ordered by series.
+// 倒排索引搜索流程
 func PostingsForMatchers(ix IndexReader, ms ...*labels.Matcher) (index.Postings, error) {
 	var its, notIts []index.Postings
 	// See which label must be non-empty.
@@ -299,11 +310,16 @@ func PostingsForMatchers(ix IndexReader, ms ...*labels.Matcher) (index.Postings,
 		}
 	}
 
+	log.Infof("labelMustBeSet:%s \n", strutil.DumpJson(labelMustBeSet))
+
+	// 遍历每个查询条件，在倒排索引中搜索数据
 	for _, m := range ms {
+		// lable value不为空的场景
 		if labelMustBeSet[m.Name] {
 			// If this matcher must be non-empty, we can be smarter.
 			matchesEmpty := m.Matches("")
 			isNot := m.Type == labels.MatchNotEqual || m.Type == labels.MatchNotRegexp
+			// 非条件查询
 			if isNot && matchesEmpty { // l!="foo"
 				// If the label can't be empty and is a Not and the inner matcher
 				// doesn't match empty, then subtract it out at the end.
@@ -331,6 +347,8 @@ func PostingsForMatchers(ix IndexReader, ms ...*labels.Matcher) (index.Postings,
 				}
 				its = append(its, it)
 			} else { // l="a"
+				// 最简单的搜索
+				log.Infof("最简单的精确查询: %s \n", strutil.DumpJson(m))
 				// Non-Not matcher, use normal postingsForMatcher.
 				it, err := postingsForMatcher(ix, m)
 				if err != nil {
@@ -370,15 +388,19 @@ func PostingsForMatchers(ix IndexReader, ms ...*labels.Matcher) (index.Postings,
 	return it, nil
 }
 
+// 在倒排索引中搜索数据
 func postingsForMatcher(ix IndexReader, m *labels.Matcher) (index.Postings, error) {
 	// This method will not return postings for missing labels.
 
 	// Fast-path for equal matching.
+	// 精确查询
 	if m.Type == labels.MatchEqual {
+		log.Info("执行精确查询逻辑")
 		return ix.Postings(m.Name, m.Value)
 	}
 
 	// Fast-path for set matching.
+	// 正则查询
 	if m.Type == labels.MatchRegexp {
 		setMatches := findSetMatches(m.GetRegexString())
 		if len(setMatches) > 0 {
@@ -677,11 +699,13 @@ func (s *mergedVerticalSeriesSet) Next() bool {
 
 // baseChunkSeries loads the label set and chunk references for a postings
 // list from an index. It filters out series that have labels set that should be unset.
+// 从索引加载postings集列表的标签集和块引用。 它过滤掉具有应取消设置的标签的系列。
 type baseChunkSeries struct {
 	p          index.Postings
 	index      IndexReader
 	tombstones tombstones.Reader
 
+	// 每次next,往下翻一条线的label和chunk meta
 	lset      labels.Labels
 	chks      []chunks.Meta
 	intervals tombstones.Intervals
@@ -700,14 +724,19 @@ func LookupChunkSeriesSorted(ir IndexReader, tr tombstones.Reader, ms ...*labels
 	return lookupChunkSeries(true, ir, tr, ms...)
 }
 
+// 搜索时序数据
 func lookupChunkSeries(sorted bool, ir IndexReader, tr tombstones.Reader, ms ...*labels.Matcher) (storage.DeprecatedChunkSeriesSet, error) {
 	if tr == nil {
 		tr = tombstones.NewMemTombstones()
 	}
+
+	log.Infof("查询时序数据，查询条件:%s \n", strutil.DumpJson(ms))
+	// 在索引里面搜索数据，获取到offset列表
 	p, err := PostingsForMatchers(ir, ms...)
 	if err != nil {
 		return nil, err
 	}
+	// 把ref进行排序
 	if sorted {
 		p = ir.SortedPostings(p)
 	}
@@ -724,15 +753,20 @@ func (s *baseChunkSeries) At() (labels.Labels, []chunks.Meta, tombstones.Interva
 
 func (s *baseChunkSeries) Err() error { return s.err }
 
+// next，调用一次，游标往后面挪动一次
+// 初始化的时候，只给postings列表、index读取器、墓碑
 func (s *baseChunkSeries) Next() bool {
 	var (
-		lset     = make(labels.Labels, len(s.lset))
-		chkMetas = make([]chunks.Meta, len(s.chks))
+		lset     = make(labels.Labels, len(s.lset)) // tag
+		chkMetas = make([]chunks.Meta, len(s.chks)) // chunk的meta,描述和记录了这个chunk的信息
 		err      error
 	)
 
+	// 遍历postings列表，取出每个匹配到的ref列表
 	for s.p.Next() {
-		ref := s.p.At()
+		ref := s.p.At() // 取出ref列表
+
+		// 根据ref，从索引里面查出所有的block meta和label
 		if err := s.index.Series(ref, &lset, &chkMetas); err != nil {
 			// Postings may be stale. Skip if no underlying series exists.
 			if errors.Cause(err) == storage.ErrNotFound {
@@ -754,6 +788,7 @@ func (s *baseChunkSeries) Next() bool {
 			// Only those chunks that are not entirely deleted.
 			chks := make([]chunks.Meta, 0, len(s.chks))
 			for _, chk := range s.chks {
+				// chunk不在墓碑中，则返回
 				if !(tombstones.Interval{Mint: chk.MinTime, Maxt: chk.MaxTime}.IsSubrange(s.intervals)) {
 					chks = append(chks, chk)
 				}
