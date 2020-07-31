@@ -234,11 +234,19 @@ common-tarball: promu
 .PHONY: common-docker $(BUILD_DOCKER_ARCHS)
 common-docker: $(BUILD_DOCKER_ARCHS)
 $(BUILD_DOCKER_ARCHS): common-docker-%:
+	@echo ">> building binaries"
+	GOOS=linux GOARCH=amd64 GO111MODULE=$(GO111MODULE) $(PROMU) build --prefix $(PREFIX) $(PROMU_BINARIES)
+   	#GO111MODULE=$(GO111MODULE) $(GO) build -o promtool cmd/promtool/main.go
 	docker build -t "$(DOCKER_REPO)/$(DOCKER_IMAGE_NAME)-linux-$*:$(DOCKER_IMAGE_TAG)" \
 		-f $(DOCKERFILE_PATH) \
 		--build-arg ARCH="$*" \
 		--build-arg OS="linux" \
 		$(DOCKERBUILD_CONTEXT)
+
+.PHONY: linux
+linux:
+	@echo ">> building linux bin"
+	GOOS=linux GOARCH=amd64 GO111MODULE=$(GO111MODULE) $(PROMU) build --prefix $(PREFIX) $(PROMU_BINARIES)
 
 .PHONY: common-docker-publish $(PUBLISH_DOCKER_ARCHS)
 common-docker-publish: $(PUBLISH_DOCKER_ARCHS)

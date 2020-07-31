@@ -82,9 +82,12 @@ var (
 	defaultRetentionDuration model.Duration
 )
 
+// 初始化操作
 func init() {
+	// 注册监控指标等
 	prometheus.MustRegister(version.NewCollector("prometheus"))
 
+	// 把时间存储TTL转换到时间戳指标，方便后面设置数据的TTL，默认的数据过期时间为15天
 	var err error
 	defaultRetentionDuration, err = model.ParseDuration(defaultRetentionString)
 	if err != nil {
@@ -93,6 +96,7 @@ func init() {
 }
 
 func main() {
+	// 如果环境变量中，设置了debug模式，那么就会打开一些Profile之类，方便进行debug
 	if os.Getenv("DEBUG") != "" {
 		runtime.SetBlockProfileRate(20)
 		runtime.SetMutexProfileFraction(20)
@@ -103,29 +107,31 @@ func main() {
 		newFlagRetentionDuration model.Duration
 	)
 
+	// 配置文件结构，这边直接用一个局部的配置文件变量，感觉不是特别好维护
 	cfg := struct {
-		configFile string
+		configFile string // 配置文件路径
 
-		localStoragePath    string
-		notifier            notifier.Options
-		notifierTimeout     model.Duration
-		forGracePeriod      model.Duration
-		outageTolerance     model.Duration
-		resendDelay         model.Duration
-		web                 web.Options
-		tsdb                tsdbOptions
+		localStoragePath    string           // 数据保存路径
+		notifier            notifier.Options // 应该是alter相关的一些配置，队列长度，http处理的回调函数配置等
+		notifierTimeout     model.Duration   // 告警超时时间？
+		forGracePeriod      model.Duration   // 优雅重启的时间间隔？？
+		outageTolerance     model.Duration   // 断电容忍时间？？
+		resendDelay         model.Duration   // 响应延迟
+		web                 web.Options      // web服务的一些配置
+		tsdb                tsdbOptions      // tsdb的一些配置
 		lookbackDelta       model.Duration
 		webTimeout          model.Duration
-		queryTimeout        model.Duration
-		queryConcurrency    int
-		queryMaxSamples     int
+		queryTimeout        model.Duration // 查询超时
+		queryConcurrency    int            // 查询并发限制
+		queryMaxSamples     int            // 查询最大点数限制
 		RemoteFlushDeadline model.Duration
 
 		prometheusURL   string
 		corsRegexString string
 
-		promlogConfig promlog.Config
+		promlogConfig promlog.Config // 日志配置
 	}{
+		// 初始化一部分默认的配置
 		notifier: notifier.Options{
 			Registerer: prometheus.DefaultRegisterer,
 		},
@@ -133,25 +139,30 @@ func main() {
 			Registerer: prometheus.DefaultRegisterer,
 			Gatherer:   prometheus.DefaultGatherer,
 		},
+		// 日志配置，这里传入的也是一个默认的日志配置
 		promlogConfig: promlog.Config{},
 	}
 
+	// 使用Kingpin来启动一个命令行管理工具，我们的HoraeDB进行改造，也需要加入这样的命令行管理工具
+	// 进行一些命令行参数的管理,传入app名，在Prometheus中，传入的是启动参数的第一个
 	a := kingpin.New(filepath.Base(os.Args[0]), "The Prometheus monitoring server")
 
+	// 设置服务的版本
 	a.Version(version.Print("prometheus"))
 
+	// 设置 -h的参数选项
 	a.HelpFlag.Short('h')
-
+	// 配置文件路径
 	a.Flag("config.file", "Prometheus configuration file path.").
 		Default("prometheus.yml").StringVar(&cfg.configFile)
-
+	// 监听地址，默认是9090
 	a.Flag("web.listen-address", "Address to listen on for UI, API, and telemetry.").
 		Default("0.0.0.0:9090").StringVar(&cfg.web.ListenAddress)
-
+	// 读超时，默认是五分钟
 	a.Flag("web.read-timeout",
 		"Maximum duration before timing out read of the request, and closing idle connections.").
 		Default("5m").SetValue(&cfg.webTimeout)
-
+	// 最大连接数限制，默认是512
 	a.Flag("web.max-connections", "Maximum number of simultaneous connections.").
 		Default("512").IntVar(&cfg.web.MaxConnections)
 
@@ -168,7 +179,7 @@ func main() {
 
 	a.Flag("web.enable-lifecycle", "Enable shutdown and reload via HTTP request.").
 		Default("false").BoolVar(&cfg.web.EnableLifecycle)
-
+	// 是否开启管理API
 	a.Flag("web.enable-admin-api", "Enable API endpoints for admin control actions.").
 		Default("false").BoolVar(&cfg.web.EnableAdminAPI)
 
@@ -179,14 +190,15 @@ func main() {
 		Default("console_libraries").StringVar(&cfg.web.ConsoleLibrariesPath)
 
 	a.Flag("web.page-title", "Document title of Prometheus instance.").
-		Default("Prometheus Time Series Collection and Processing Server").StringVar(&cfg.web.PageTitle)
+		Default("测试用的Prometheus").StringVar(&cfg.web.PageTitle)
 
 	a.Flag("web.cors.origin", `Regex for CORS origin. It is fully anchored. Example: 'https?://(domain1|domain2)\.com'`).
 		Default(".*").StringVar(&cfg.corsRegexString)
 
+	// 数据目录,默认是在当前文件夹下面的data目录
 	a.Flag("storage.tsdb.path", "Base path for metrics storage.").
 		Default("data/").StringVar(&cfg.localStoragePath)
-
+	// block的时间跨度
 	a.Flag("storage.tsdb.min-block-duration", "Minimum duration of a data block before being persisted. For use in testing.").
 		Hidden().Default("2h").SetValue(&cfg.tsdb.MinBlockDuration)
 
@@ -257,6 +269,7 @@ func main() {
 
 	promlogflag.AddFlags(a, &cfg.promlogConfig)
 
+	// 解析命令行参数，传入到flag中
 	_, err := a.Parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, errors.Wrapf(err, "Error parsing commandline arguments"))
@@ -264,6 +277,7 @@ func main() {
 		os.Exit(2)
 	}
 
+	// 初始化日志
 	logger := promlog.New(&cfg.promlogConfig)
 
 	cfg.web.ExternalURL, err = computeExternalURL(cfg.prometheusURL, cfg.web.ListenAddress)
@@ -279,6 +293,7 @@ func main() {
 	}
 
 	// Throw error for invalid config before starting other components.
+	// 打开配置文件，加载配置文件,配置文件中的配置覆盖命令行
 	if _, err := config.LoadFile(cfg.configFile); err != nil {
 		level.Error(logger).Log("msg", fmt.Sprintf("Error loading config (--config.file=%s)", cfg.configFile), "err", err)
 		os.Exit(2)
@@ -340,14 +355,16 @@ func main() {
 	klog.ClampLevel(6)
 	klog.SetLogger(log.With(logger, "component", "k8s_client_runtime"))
 
+	// 在k8s中打印一些日志？？
 	level.Info(logger).Log("msg", "Starting Prometheus", "version", version.Info())
 	level.Info(logger).Log("build_context", version.BuildContext())
 	level.Info(logger).Log("host_details", prom_runtime.Uname())
 	level.Info(logger).Log("fd_limits", prom_runtime.FdLimits())
 	level.Info(logger).Log("vm_limits", prom_runtime.VMLimits())
 
+	// 启动两个存储，一个是本地的存储，一个是远端存储
 	var (
-		localStorage  = &readyStorage{}
+		localStorage  = &readyStorage{} // 写入，查询，的封装，对底层的tsdb进行了一层封装
 		remoteStorage = remote.NewStorage(log.With(logger, "component", "remote"), prometheus.DefaultRegisterer, localStorage.StartTime, cfg.localStoragePath, time.Duration(cfg.RemoteFlushDeadline))
 		fanoutStorage = storage.NewFanout(logger, localStorage, remoteStorage)
 	)
@@ -366,6 +383,7 @@ func main() {
 
 		scrapeManager = scrape.NewManager(log.With(logger, "component", "scrape manager"), fanoutStorage)
 
+		// 查询引擎里面包了这么多东西
 		opts = promql.EngineOpts{
 			Logger:             log.With(logger, "component", "query engine"),
 			Reg:                prometheus.DefaultRegisterer,
@@ -375,6 +393,7 @@ func main() {
 			LookbackDelta:      time.Duration(cfg.lookbackDelta),
 		}
 
+		// 启动时创建了查询引擎
 		queryEngine = promql.NewEngine(opts)
 
 		ruleManager = rules.NewManager(&rules.ManagerOptions{
@@ -1032,12 +1051,12 @@ func (s *readyStorage) Stats(statsByLabelName string) (*tsdb.Stats, error) {
 // tsdbOptions is tsdb.Option version with defined units.
 // This is required as tsdb.Option fields are unit agnostic (time).
 type tsdbOptions struct {
-	WALSegmentSize         units.Base2Bytes
-	RetentionDuration      model.Duration
-	MaxBytes               units.Base2Bytes
+	WALSegmentSize         units.Base2Bytes // WAL 日志切分大小
+	RetentionDuration      model.Duration   // 数据过期时间
+	MaxBytes               units.Base2Bytes // 数据大小限制
 	NoLockfile             bool
 	AllowOverlappingBlocks bool
-	WALCompression         bool
+	WALCompression         bool // 是否要对WAL log进行压缩
 	StripeSize             int
 	MinBlockDuration       model.Duration
 	MaxBlockDuration       model.Duration

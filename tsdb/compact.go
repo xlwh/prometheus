@@ -54,13 +54,10 @@ func ExponentialBlockRanges(minSize int64, steps, stepSize int) []int64 {
 // Compactor provides compaction against an underlying storage
 // of time series data.
 type Compactor interface {
-	// Plan returns a set of directories that can be compacted concurrently.
-	// The directories can be overlapping.
-	// Results returned when compactions are in progress are undefined.
+	// 返回一组可以同时进行Compaction的目录
 	Plan(dir string) ([]string, error)
 
-	// Write persists a Block into a directory.
-	// No Block is written when resulting Block has 0 samples, and returns empty ulid.ULID{}.
+	// 将block持久化到目录中去
 	Write(dest string, b BlockReader, mint, maxt int64, parent *BlockMeta) (ulid.ULID, error)
 
 	// Compact runs compaction against the provided directories. Must
@@ -71,6 +68,7 @@ type Compactor interface {
 	//  * No block is written.
 	//  * The source dirs are marked Deletable.
 	//  * Returns empty ulid.ULID{}.
+	// 对提供的目录进行Compaction
 	Compact(dest string, dirs []string, open []*Block) (ulid.ULID, error)
 }
 
@@ -416,6 +414,7 @@ func (c *LeveledCompactor) Compact(dest string, dirs []string, open []*Block) (u
 	uid = ulid.MustNew(ulid.Now(), rand.Reader)
 
 	meta := compactBlockMetas(uid, metas...)
+	// 进行数据压缩处理
 	err = c.write(dest, meta, blocks...)
 	if err == nil {
 		if meta.Stats.NumSamples == 0 {
@@ -464,17 +463,20 @@ func (c *LeveledCompactor) Compact(dest string, dirs []string, open []*Block) (u
 	return uid, merr
 }
 
+// 进行数据的Compaction
 func (c *LeveledCompactor) Write(dest string, b BlockReader, mint, maxt int64, parent *BlockMeta) (ulid.ULID, error) {
 	start := time.Now()
 
+	// 根据当前时间，计算uid
 	uid := ulid.MustNew(ulid.Now(), rand.Reader)
 
+	// Meta
 	meta := &BlockMeta{
 		ULID:    uid,
 		MinTime: mint,
 		MaxTime: maxt,
 	}
-	meta.Compaction.Level = 1
+	meta.Compaction.Level = 1 // 第一次压缩
 	meta.Compaction.Sources = []ulid.ULID{uid}
 
 	if parent != nil {
@@ -483,6 +485,7 @@ func (c *LeveledCompactor) Write(dest string, b BlockReader, mint, maxt int64, p
 		}
 	}
 
+	// 写Meta
 	err := c.write(dest, meta, b)
 	if err != nil {
 		return uid, err
@@ -523,7 +526,9 @@ func (w *instrumentedChunkWriter) WriteChunks(chunks ...chunks.Meta) error {
 
 // write creates a new block that is the union of the provided blocks into dir.
 // It cleans up all files of the old blocks after completing successfully.
+// 进行Compaction
 func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks ...BlockReader) (err error) {
+	// 拼数据目录
 	dir := filepath.Join(dest, meta.ULID.String())
 	tmp := dir + ".tmp"
 	var closers []io.Closer
@@ -541,6 +546,7 @@ func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks ...BlockRe
 		c.metrics.duration.Observe(time.Since(t).Seconds())
 	}(time.Now())
 
+	// 清理同名目录，避免数据污染
 	if err = os.RemoveAll(tmp); err != nil {
 		return err
 	}
@@ -574,6 +580,7 @@ func (c *LeveledCompactor) write(dest string, meta *BlockMeta, blocks ...BlockRe
 	}
 	closers = append(closers, indexw)
 
+	// 进行数据处理
 	if err := c.populateBlock(blocks, meta, indexw, chunkw); err != nil {
 		return errors.Wrap(err, "write compaction")
 	}
@@ -663,6 +670,7 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 	c.metrics.populatingBlocks.Set(1)
 
 	globalMaxt := blocks[0].Meta().MaxTime
+	// 遍历所有的block，当然对于head，只有一个block
 	for i, b := range blocks {
 		select {
 		case <-c.ctx.Done():
@@ -721,6 +729,7 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 		symbols = newMergedStringIter(symbols, syms)
 	}
 
+	// 写符号表
 	for symbols.Next() {
 		if err := indexw.AddSymbol(symbols.At()); err != nil {
 			return errors.Wrap(err, "add symbol")
@@ -815,6 +824,7 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 			return errors.Wrap(err, "write chunks")
 		}
 
+		// 写Series
 		if err := indexw.AddSeries(ref, lset, mergedChks...); err != nil {
 			return errors.Wrap(err, "add series")
 		}

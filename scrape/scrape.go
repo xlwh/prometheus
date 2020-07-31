@@ -870,13 +870,13 @@ func (c *scrapeCache) LengthMetadata() int {
 }
 
 func newScrapeLoop(ctx context.Context,
-	sc scraper,
-	l log.Logger,
+	sc scraper, // 数据抓取器
+	l log.Logger, // 日志组件
 	buffers *pool.Pool,
 	sampleMutator labelsMutator,
 	reportSampleMutator labelsMutator,
 	appender func() storage.Appender,
-	cache *scrapeCache,
+	cache *scrapeCache, // 内部缓存，缓存已经抓取过的metric
 	jitterSeed uint64,
 	honorTimestamps bool,
 ) *scrapeLoop {

@@ -452,19 +452,78 @@ func BenchmarkWAL_LogBatched(b *testing.B) {
 	}
 }
 
+func Test_MyLogWrite(t *testing.T) {
+	w, err := New(nil, nil, "/Users/zhanghongbin/workspace/prometheus/tsdb/mydata/mylog", false)
+	if err != nil {
+		fmt.Printf("Error to open log:%s", err.Error())
+		return
+	}
+
+	w.log([]byte("Delete code for WAL reader to start at nonzero offset by ajkr"), true)
+	w.log([]byte("hello"), true)
+
+	// 把日志刷出
+	w.flushPage(true)
+	w.Close()
+}
+
+func Test_MyLogRead(t *testing.T) {
+	sr, err := NewSegmentsReader("/Users/zhanghongbin/workspace/prometheus/tsdb/mydata/mylog")
+	if err != nil {
+		fmt.Printf("Error to open wal log reader:%s", err.Error())
+		return
+	}
+
+	reader := NewReader(sr)
+	for reader.Next() {
+		data := reader.Record()
+
+		fmt.Println("Read data:", string(data))
+	}
+	sr.Close()
+}
+
+func Test_OpenWal(t *testing.T) {
+	f, err := os.Open("/Users/zhanghongbin/workspace/prometheus/tsdb/mydata/mylog/00000000")
+	if err != nil {
+		fmt.Sprintf("Error to open file:%s", err.Error())
+		os.Exit(-1)
+	}
+
+	var buf []byte = make([]byte, 0, 1024)
+	var off int
+	n, err := f.Read(buf)
+	if err != nil {
+		fmt.Println("Read file error", err.Error())
+		os.Exit(-1)
+	}
+
+	// 往前偏移一下
+	off += n
+
+	_, err = f.ReadAt(buf, 1)
+
+	fmt.Println("read:", buf)
+}
+
+// 写日志，进行性能压测
 func BenchmarkWAL_Log(b *testing.B) {
 	for _, compress := range []bool{true, false} {
 		b.Run(fmt.Sprintf("compress=%t", compress), func(b *testing.B) {
+			// 创建文件夹之类
 			dir, err := ioutil.TempDir("", "bench_logsingle")
 			testutil.Ok(b, err)
 			defer func() {
 				testutil.Ok(b, os.RemoveAll(dir))
 			}()
 
+			// 创建WAL log，压缩算法随机开启
 			w, err := New(nil, nil, dir, compress)
 			testutil.Ok(b, err)
+			// 关闭wal log
 			defer w.Close()
 
+			// 写入2028
 			var buf [2048]byte
 			b.SetBytes(2048)
 

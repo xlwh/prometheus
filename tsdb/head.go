@@ -401,6 +401,7 @@ func (h *Head) updateMinMaxTime(mint, maxt int64) {
 	}
 }
 
+// 加载wal 日志中的数据
 func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks map[uint64][]*mmappedChunk) (err error) {
 	// Track number of samples that referenced a series we don't know about
 	// for error reporting.
@@ -462,12 +463,13 @@ func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks 
 		}(inputs[i], outputs[i])
 	}
 
+	// 读取数据
 	go func() {
 		defer close(decoded)
 		for r.Next() {
 			rec := r.Record()
 			switch dec.Type(rec) {
-			case record.Series:
+			case record.Series: // meta
 				series := seriesPool.Get().([]record.RefSeries)[:0]
 				series, err = dec.Series(rec, series)
 				if err != nil {
@@ -479,7 +481,7 @@ func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks 
 					return
 				}
 				decoded <- series
-			case record.Samples:
+			case record.Samples: // 数据点
 				samples := samplesPool.Get().([]record.RefSample)[:0]
 				samples, err = dec.Samples(rec, samples)
 				if err != nil {
@@ -491,7 +493,7 @@ func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks 
 					return
 				}
 				decoded <- samples
-			case record.Tombstones:
+			case record.Tombstones: // 墓碑
 				tstones := tstonesPool.Get().([]tombstones.Stone)[:0]
 				tstones, err = dec.Tombstones(rec, tstones)
 				if err != nil {
@@ -657,12 +659,14 @@ func (h *Head) Init(minValidTime int64) error {
 	}
 
 	// Backfill the checkpoint first if it exists.
+	// 重启的时候读取检查点
 	dir, startFrom, err := wal.LastCheckpoint(h.wal.Dir())
 	if err != nil && err != record.ErrNotFound {
 		return errors.Wrap(err, "find last checkpoint")
 	}
 	multiRef := map[uint64]uint64{}
 	if err == nil {
+		// 打开wal 日志
 		sr, err := wal.NewSegmentsReader(dir)
 		if err != nil {
 			return errors.Wrap(err, "open checkpoint")
@@ -842,6 +846,7 @@ func (h *Head) Truncate(mint int64) (err error) {
 		}
 		return errors.Wrap(err, "create checkpoint")
 	}
+	// 删除wal log
 	if err := h.wal.Truncate(last + 1); err != nil {
 		// If truncating fails, we'll just try again at the next checkpoint.
 		// Leftover segments will just be ignored in the future if there's a checkpoint
@@ -1150,6 +1155,7 @@ func (a *headAppender) AddFast(ref uint64, t int64, v float64) error {
 	return nil
 }
 
+// 写wal日志
 func (a *headAppender) log() error {
 	if a.head.wal == nil {
 		return nil
@@ -1161,6 +1167,7 @@ func (a *headAppender) log() error {
 	var rec []byte
 	var enc record.Encoder
 
+	// 写Meta
 	if len(a.series) > 0 {
 		rec = enc.Series(a.series, buf)
 		buf = rec[:0]
@@ -1169,6 +1176,7 @@ func (a *headAppender) log() error {
 			return errors.Wrap(err, "log series")
 		}
 	}
+	// 写数据
 	if len(a.samples) > 0 {
 		rec = enc.Samples(a.samples, buf)
 		buf = rec[:0]
@@ -1194,6 +1202,7 @@ func (a *headAppender) Commit() error {
 
 	total := len(a.samples)
 	var series *memSeries
+	// 遍历内存中的所有数据点
 	for i, s := range a.samples {
 		series = a.sampleSeries[i]
 		series.Lock()
@@ -1590,11 +1599,13 @@ func (h *headIndexReader) LabelNames() ([]string, error) {
 }
 
 // Postings returns the postings list iterator for the label pairs.
+// 传入Tag key value，搜索数据
 func (h *headIndexReader) Postings(name string, values ...string) (index.Postings, error) {
 	res := make([]index.Postings, 0, len(values))
 	for _, value := range values {
 		res = append(res, h.head.postings.Get(name, value))
 	}
+	// 所有的id,求交集
 	return index.Merge(res...), nil
 }
 

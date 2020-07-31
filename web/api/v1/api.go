@@ -14,8 +14,12 @@
 package v1
 
 import (
+	"bufio"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"math"
 	"math/rand"
 	"net"
@@ -172,8 +176,8 @@ type TSDBAdminStats interface {
 // API can register a set of endpoints in a router and handle
 // them using the provided storage and query engine.
 type API struct {
-	// TODO(bwplotka): Change to SampleAndChunkQueryable in next PR.
-	Queryable   storage.Queryable
+	// 上面的这两个是核心，其他的一般啦
+	Queryable   storage.SampleAndChunkQueryable
 	QueryEngine *promql.Engine
 
 	targetRetriever       func(context.Context) TargetRetriever
@@ -186,6 +190,7 @@ type API struct {
 	globalURLOptions      GlobalURLOptions
 
 	db                        TSDBAdminStats
+	append                    storage.Appendable
 	dbDir                     string
 	enableAdmin               bool
 	logger                    log.Logger
@@ -206,6 +211,7 @@ func init() {
 func NewAPI(
 	qe *promql.Engine,
 	q storage.SampleAndChunkQueryable,
+	append storage.Appendable,
 	tr func(context.Context) TargetRetriever,
 	ar func(context.Context) AlertmanagerRetriever,
 	configFunc func() config.Config,
@@ -227,6 +233,7 @@ func NewAPI(
 	return &API{
 		QueryEngine:           qe,
 		Queryable:             q,
+		append:                append,
 		targetRetriever:       tr,
 		alertmanagerRetriever: ar,
 
@@ -321,6 +328,8 @@ func (api *API) Register(r *route.Router) {
 	r.Put("/admin/tsdb/clean_tombstones", wrap(api.cleanTombstones))
 	r.Put("/admin/tsdb/snapshot", wrap(api.snapshot))
 
+	// 构造压测数据使用
+	r.Post("/put", wrap(api.putSample))
 }
 
 type queryData struct {
@@ -385,6 +394,7 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 	}, nil, res.Warnings, qry.Close}
 }
 
+// 常用的时序查询接口
 func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 	start, err := parseTime(r.FormValue("start"))
 	if err != nil {
@@ -432,6 +442,8 @@ func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 		defer cancel()
 	}
 
+	// 创建一个查询实例，由调用者传入数据查询接口和查询参数
+	// 查询引擎只是负责执行而已
 	qry, err := api.QueryEngine.NewRangeQuery(api.Queryable, r.FormValue("query"), start, end, step)
 	if err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, err}, nil, nil}
@@ -447,6 +459,7 @@ func (api *API) queryRange(r *http.Request) (result apiFuncResult) {
 
 	ctx = httputil.ContextFromRequest(ctx, r)
 
+	// 执行查询和计算
 	res := qry.Exec(ctx)
 	if res.Err != nil {
 		return apiFuncResult{nil, returnAPIError(res.Err), res.Warnings, qry.Close}
@@ -1382,6 +1395,65 @@ func filterExtLabelsFromMatchers(pbMatchers []*prompb.LabelMatcher, externalLabe
 	}
 
 	return filteredMatchers, nil
+}
+
+type PutSample struct {
+	Metric    string            `json:"metric"`
+	Tags      map[string]string `json:"tags,omitempty"`
+	TimeStamp int64             `json:"timestamp,omitempty"`
+	Value     float64           `json:"value,omitempty"`
+}
+
+// 写入时序数据点，用于压测使用
+func (api *API) putSample(r *http.Request) apiFuncResult {
+	defer r.Body.Close()
+	// Wrap reader if it's gzip encoded.
+	var br *bufio.Reader
+
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(r.Body)
+		defer zr.Close()
+		if err != nil {
+			return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
+		}
+
+		br = bufio.NewReader(zr)
+	} else {
+		br = bufio.NewReader(r.Body)
+	}
+
+	b, err := ioutil.ReadAll(br)
+	if err != nil {
+		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error parsing form values")}, nil, nil}
+	}
+
+	// level.Info(api.logger).Log("msg", "recv put", string(b))
+
+	p := textparse.NewPromParser(b)
+	app := api.append.Appender()
+Loop:
+	for {
+		var res labels.Labels
+		et, err := p.Next()
+		if err == io.EOF {
+			break Loop
+		}
+
+		switch et {
+		case textparse.EntrySeries:
+			_, ts, v := p.Series()
+			p.Metric(&res)
+			if ts == nil {
+				app.Add(res, time.Now().UnixNano()/1e6, v)
+			} else {
+				app.Add(res, *ts, v)
+			}
+		default:
+			continue
+		}
+	}
+	app.Commit()
+	return apiFuncResult{nil, nil, nil, nil}
 }
 
 func (api *API) deleteSeries(r *http.Request) apiFuncResult {

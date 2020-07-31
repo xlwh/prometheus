@@ -16,6 +16,7 @@ package tsdb
 import (
 	"context"
 	"fmt"
+	"github.com/prometheus/common/log"
 	"io/ioutil"
 	"math"
 	"math/rand"
@@ -64,6 +65,7 @@ func newMockSeriesSet(list []storage.Series) *mockSeriesSet {
 }
 
 func TestMergedSeriesSet(t *testing.T) {
+	// 一些测试Case
 	cases := []struct {
 		// The input sets in order (samples in series in b are strictly
 		// after those in a).
@@ -200,23 +202,39 @@ type seriesSamples struct {
 
 // Index: labels -> postings -> chunkMetas -> chunkRef
 // ChunkReader: ref -> vals
+// 构造测试数据，可以构造索引和chunk
 func createIdxChkReaders(t *testing.T, tc []seriesSamples) (IndexReader, ChunkReader, int64, int64) {
+	// 传入的数据按照Label进行排序
 	sort.Slice(tc, func(i, j int) bool {
 		return labels.Compare(labels.FromMap(tc[i].lset), labels.FromMap(tc[i].lset)) < 0
 	})
 
+	// 内存中维护一个倒排
+	// make(map[string]map[string][]uint64, 512)
 	postings := index.NewMemPostings()
+	// ref -> chunk
 	chkReader := mockChunkReader(make(map[uint64]chunkenc.Chunk))
+	// k -> v1,v2,v3
+	// map[string]map[string]struct{}
 	lblIdx := make(map[string]stringset)
+	/*
+		ix := mockIndex{
+			series:   make(map[uint64]series),     ref -> blockMeta
+			postings: make(map[labels.Label][]uint64),
+			symbols:  make(map[string]struct{}),    符号表，没啥用，好像
+		}
+	*/
 	mi := newMockIndex()
 	blockMint := int64(math.MaxInt64)
 	blockMaxt := int64(math.MinInt64)
 
 	var chunkRef uint64
+	// 遍历线
 	for i, s := range tc {
 		i = i + 1 // 0 is not a valid posting.
 		metas := make([]chunks.Meta, 0, len(s.chunks))
 		for _, chk := range s.chunks {
+			// minTime 和 maxTime
 			if chk[0].t < blockMint {
 				blockMint = chk[0].t
 			}
@@ -224,24 +242,29 @@ func createIdxChkReaders(t *testing.T, tc []seriesSamples) (IndexReader, ChunkRe
 				blockMaxt = chk[len(chk)-1].t
 			}
 
+			// 构建meta
 			metas = append(metas, chunks.Meta{
 				MinTime: chk[0].t,
 				MaxTime: chk[len(chk)-1].t,
 				Ref:     chunkRef,
 			})
 
+			// 编码压入数据
 			chunk := chunkenc.NewXORChunk()
 			app, _ := chunk.Appender()
 			for _, smpl := range chk {
 				app.Append(smpl.t, smpl.v)
 			}
+
 			chkReader[chunkRef] = chunk
 			chunkRef++
 		}
 
+		// 构建内存索引
 		ls := labels.FromMap(s.lset)
 		testutil.Ok(t, mi.AddSeries(uint64(i), ls, metas...))
 
+		// 构建倒排
 		postings.Add(uint64(i), ls)
 
 		for _, l := range ls {
@@ -254,6 +277,7 @@ func createIdxChkReaders(t *testing.T, tc []seriesSamples) (IndexReader, ChunkRe
 		}
 	}
 
+	// 返回所有的id
 	testutil.Ok(t, postings.Iter(func(l labels.Label, p index.Postings) error {
 		return mi.WritePostings(l.Name, l.Value, p)
 	}))
@@ -261,7 +285,9 @@ func createIdxChkReaders(t *testing.T, tc []seriesSamples) (IndexReader, ChunkRe
 	return mi, chkReader, blockMint, blockMaxt
 }
 
+// 测试block查询功能
 func TestBlockQuerier(t *testing.T) {
+	// 内存中的一些线
 	newSeries := func(l map[string]string, s []tsdbutil.Sample) storage.Series {
 		return &mockSeries{
 			labels:   func() labels.Labels { return labels.FromMap(l) },
@@ -282,9 +308,11 @@ func TestBlockQuerier(t *testing.T) {
 	}{
 		data: []seriesSamples{
 			{
+				// Meta
 				lset: map[string]string{
 					"a": "a",
 				},
+				// 数据点
 				chunks: [][]sample{
 					{
 						{1, 2}, {2, 3}, {3, 4},
@@ -325,24 +353,6 @@ func TestBlockQuerier(t *testing.T) {
 
 		queries: []query{
 			{
-				mint: 0,
-				maxt: 0,
-				ms:   []*labels.Matcher{},
-				exp:  newMockSeriesSet([]storage.Series{}),
-			},
-			{
-				mint: 0,
-				maxt: 0,
-				ms:   []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "a", "a")},
-				exp:  newMockSeriesSet([]storage.Series{}),
-			},
-			{
-				mint: 1,
-				maxt: 0,
-				ms:   []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "a", "a")},
-				exp:  newMockSeriesSet([]storage.Series{}),
-			},
-			{
 				mint: 2,
 				maxt: 6,
 				ms:   []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "a", "a")},
@@ -367,8 +377,8 @@ Outer:
 	for _, c := range cases.queries {
 		ir, cr, _, _ := createIdxChkReaders(t, cases.data)
 		querier := &blockQuerier{
-			index:      ir,
-			chunks:     cr,
+			index:      ir, // 传入索引
+			chunks:     cr, // 传入chunk数据
 			tombstones: tombstones.NewMemTombstones(),
 
 			mint: c.mint,
@@ -1363,10 +1373,13 @@ func (m mockIndex) Symbols() index.StringIter {
 	return index.NewStringListIter(l)
 }
 
+// 内存索引里面构建索引
 func (m *mockIndex) AddSeries(ref uint64, l labels.Labels, chunks ...chunks.Meta) error {
 	if _, ok := m.series[ref]; ok {
 		return errors.Errorf("series with reference %d already added", ref)
 	}
+
+	// 构造符号表数据
 	for _, lbl := range l {
 		m.symbols[lbl.Name] = struct{}{}
 		m.symbols[lbl.Value] = struct{}{}
@@ -1416,10 +1429,14 @@ func (m mockIndex) LabelValues(name string) ([]string, error) {
 	return values, nil
 }
 
+// 精确查询，搜索数据
 func (m mockIndex) Postings(name string, values ...string) (index.Postings, error) {
+	log.Info("模拟在倒排索引中精确查一个数据")
 	res := make([]index.Postings, 0, len(values))
+	// 遍历所有的查询tag v
 	for _, value := range values {
 		l := labels.Label{Name: name, Value: value}
+		// map[labels.Label][]uint64
 		res = append(res, index.NewListPostings(m.postings[l]))
 	}
 	return index.Merge(res...), nil

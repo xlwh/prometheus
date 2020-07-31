@@ -33,8 +33,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
-	"github.com/uber/jaeger-client-go"
-
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/pkg/timestamp"
 	"github.com/prometheus/prometheus/pkg/value"
@@ -136,12 +134,14 @@ type Query interface {
 }
 
 // query implements the Query interface.
+// 实现了query 接口
 type query struct {
-	// Underlying data provider.
+	// 数据接口，提供数据的
 	queryable storage.Queryable
-	// The original query string.
+	// 原始查询字符串
 	q string
 	// Statement of the parsed query.
+	// 解析后的语法树
 	stmt parser.Statement
 	// Timer stats for the query execution.
 	stats *stats.QueryTimers
@@ -181,7 +181,9 @@ func (q *query) Close() {
 }
 
 // Exec implements the Query interface.
+// 执行请求，返回处理和计算结果
 func (q *query) Exec(ctx context.Context) *Result {
+	// trace 数据接口
 	if span := opentracing.SpanFromContext(ctx); span != nil {
 		span.SetTag(queryTag, q.stmt.String())
 	}
@@ -375,6 +377,7 @@ func (ng *Engine) NewInstantQuery(q storage.Queryable, qs string, ts time.Time) 
 // NewRangeQuery returns an evaluation query for the given time range and with
 // the resolution set by the interval.
 func (ng *Engine) NewRangeQuery(q storage.Queryable, qs string, start, end time.Time, interval time.Duration) (Query, error) {
+	// 解析查询
 	expr, err := parser.ParseExpr(qs)
 	if err != nil {
 		return nil, err
@@ -382,6 +385,7 @@ func (ng *Engine) NewRangeQuery(q storage.Queryable, qs string, start, end time.
 	if expr.Type() != parser.ValueTypeVector && expr.Type() != parser.ValueTypeScalar {
 		return nil, errors.Errorf("invalid expression type %q for range query, must be Scalar or instant Vector", parser.DocumentedType(expr.Type()))
 	}
+	// 构造一个查询，传入解析好的语法树
 	qry := ng.newQuery(q, expr, start, end, interval)
 	qry.q = qs
 
@@ -418,70 +422,14 @@ func (ng *Engine) newTestQuery(f func(context.Context) error) Query {
 //
 // At this point per query only one EvalStmt is evaluated. Alert and record
 // statements are not handled by the Engine.
+// 执行一个查询，传入query
+// Important
 func (ng *Engine) exec(ctx context.Context, q *query) (v parser.Value, ws storage.Warnings, err error) {
-	ng.metrics.currentQueries.Inc()
-	defer ng.metrics.currentQueries.Dec()
-
 	ctx, cancel := context.WithTimeout(ctx, ng.timeout)
 	q.cancel = cancel
 
-	defer func() {
-		ng.queryLoggerLock.RLock()
-		if l := ng.queryLogger; l != nil {
-			params := make(map[string]interface{}, 4)
-			params["query"] = q.q
-			if eq, ok := q.Statement().(*parser.EvalStmt); ok {
-				params["start"] = formatDate(eq.Start)
-				params["end"] = formatDate(eq.End)
-				// The step provided by the user is in seconds.
-				params["step"] = int64(eq.Interval / (time.Second / time.Nanosecond))
-			}
-			f := []interface{}{"params", params}
-			if err != nil {
-				f = append(f, "error", err)
-			}
-			f = append(f, "stats", stats.NewQueryStats(q.Stats()))
-			if span := opentracing.SpanFromContext(ctx); span != nil {
-				if spanCtx, ok := span.Context().(jaeger.SpanContext); ok {
-					f = append(f, "spanID", spanCtx.SpanID())
-				}
-			}
-			if origin := ctx.Value(queryOrigin{}); origin != nil {
-				for k, v := range origin.(map[string]interface{}) {
-					f = append(f, k, v)
-				}
-			}
-			if err := l.Log(f...); err != nil {
-				ng.metrics.queryLogFailures.Inc()
-				level.Error(ng.logger).Log("msg", "can't log query", "err", err)
-			}
-		}
-		ng.queryLoggerLock.RUnlock()
-	}()
-
-	execSpanTimer, ctx := q.stats.GetSpanTimer(ctx, stats.ExecTotalTime)
-	defer execSpanTimer.Finish()
-
-	queueSpanTimer, _ := q.stats.GetSpanTimer(ctx, stats.ExecQueueTime, ng.metrics.queryQueueTime)
-	// Log query in active log. The active log guarantees that we don't run over
-	// MaxConcurrent queries.
-	if ng.activeQueryTracker != nil {
-		queryIndex, err := ng.activeQueryTracker.Insert(ctx, q.q)
-		if err != nil {
-			queueSpanTimer.Finish()
-			return nil, nil, contextErr(err, "query queue")
-		}
-		defer ng.activeQueryTracker.Delete(queryIndex)
-	}
-	queueSpanTimer.Finish()
-
 	// Cancel when execution is done or an error was raised.
 	defer q.cancel()
-
-	const env = "query execution"
-
-	evalSpanTimer, ctx := q.stats.GetSpanTimer(ctx, stats.EvalTotalTime)
-	defer evalSpanTimer.Finish()
 
 	// The base context might already be canceled on the first iteration (e.g. during shutdown).
 	if err := contextDone(ctx, env); err != nil {
@@ -490,6 +438,7 @@ func (ng *Engine) exec(ctx context.Context, q *query) (v parser.Value, ws storag
 
 	switch s := q.Statement().(type) {
 	case *parser.EvalStmt:
+		// 整个函数没做啥事情，核心的就只有这个函数
 		return ng.execEvalStmt(ctx, q, s)
 	case parser.TestStmt:
 		return nil, nil, s(ctx)
@@ -510,6 +459,8 @@ func durationMilliseconds(d time.Duration) int64 {
 func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.EvalStmt) (parser.Value, storage.Warnings, error) {
 	prepareSpanTimer, ctxPrepare := query.stats.GetSpanTimer(ctx, stats.QueryPreparationTime, ng.metrics.queryPrepareTime)
 	mint := ng.findMinTime(s)
+
+	// 返回底层存储层的查询接口
 	querier, err := query.queryable.Querier(ctxPrepare, timestamp.FromTime(mint), timestamp.FromTime(s.End))
 	if err != nil {
 		prepareSpanTimer.Finish()
@@ -517,6 +468,8 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 	}
 	defer querier.Close()
 
+	// 查询时序数据点,把所有的数据加载到内存中
+	// 这里可能会有性能问题
 	ng.populateSeries(querier, s)
 	prepareSpanTimer.Finish()
 

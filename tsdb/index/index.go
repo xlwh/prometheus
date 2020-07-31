@@ -36,17 +36,26 @@ import (
 	"github.com/prometheus/prometheus/tsdb/fileutil"
 )
 
+/*
+	megic
+	version
+	TOC
+	Postings Table
+*/
+
 const (
 	// MagicIndex 4 bytes at the head of an index file.
-	MagicIndex = 0xBAAAD700
+	MagicIndex = 0xBAAAD700 // magic,标识数据，防止写错
 	// HeaderLen represents number of bytes reserved of index for header.
 	HeaderLen = 5
 
+	// 索引数据的版本号
 	// FormatV1 represents 1 version of index.
 	FormatV1 = 1
 	// FormatV2 represents 2 version of index.
 	FormatV2 = 2
 
+	// 索引在磁盘上的格式
 	indexFilename = "index"
 )
 
@@ -55,6 +64,7 @@ type indexWriterSeries struct {
 	chunks []chunks.Meta // series file offset of chunks
 }
 
+// 方便进行数据排序，构建索引的时候，会按照Tag排序，丢到索引中
 type indexWriterSeriesSlice []*indexWriterSeries
 
 func (s indexWriterSeriesSlice) Len() int      { return len(s) }
@@ -64,15 +74,17 @@ func (s indexWriterSeriesSlice) Less(i, j int) bool {
 	return labels.Compare(s[i].labels, s[j].labels) < 0
 }
 
+// 写索引状态定义
 type indexWriterStage uint8
 
 const (
-	idxStageNone indexWriterStage = iota
-	idxStageSymbols
-	idxStageSeries
-	idxStageDone
+	idxStageNone    indexWriterStage = iota // 还没有开始写数据
+	idxStageSymbols                         // 写符号表
+	idxStageSeries                          // 写时序数据Meta
+	idxStageDone                            // 写索引完成
 )
 
+// Symbol  Series(前缀-offset) TOC
 func (s indexWriterStage) String() string {
 	switch s {
 	case idxStageNone:
@@ -87,6 +99,7 @@ func (s indexWriterStage) String() string {
 	return "<unknown>"
 }
 
+// 初始化CRC表，用于数据校验，计算数据校验码，CRC32
 // The table gets initialized with sync.Once but may still cause a race
 // with any other use of the crc32 package anywhere. Thus we initialize it
 // before.
@@ -104,21 +117,26 @@ func newCRC32() hash.Hash32 {
 
 // Writer implements the IndexWriter interface for the standard
 // serialization format.
+// 核心结构，可以进行写索引数据的操作
 type Writer struct {
-	ctx context.Context
+	ctx context.Context // Context
 
+	// 不知道这里为啥要有三个写文件句柄
 	// For the main index file.
-	f *FileWriter
-
+	f *FileWriter // 写文件的句柄，FD
 	// Temporary file for postings.
 	fP *FileWriter
 	// Temporary file for posting offsets table.
-	fPO   *FileWriter
+	fPO *FileWriter
+
 	cntPO uint64
 
-	toc           TOC
-	stage         indexWriterStage
-	postingsStart uint64 // Due to padding, can differ from TOC entry.
+	/*
+		Symbols、Series、LabelIndices、LabelIndicesTable、Postings、PostingsTable
+	*/
+	toc           TOC              // 标记各个部分的起始位置
+	stage         indexWriterStage // 标记当前写索引数据的进度
+	postingsStart uint64           // Due to padding, can differ from TOC entry.
 
 	// Reusable memory.
 	buf1 encoding.Encbuf
@@ -133,12 +151,13 @@ type Writer struct {
 	labelNames   map[string]uint64     // Label names, and their usage.
 
 	// Hold last series to validate that clients insert new series in order.
+	// 保存最后一条时间线的一些信息
 	lastSeries labels.Labels
 	lastRef    uint64
 
-	crc32 hash.Hash
+	crc32 hash.Hash // 校验码
 
-	Version int
+	Version int // 版本
 }
 
 // TOC represents index Table Of Content that states where each section of index starts.
@@ -180,7 +199,9 @@ func NewTOCFromByteSlice(bs ByteSlice) (*TOC, error) {
 }
 
 // NewWriter returns a new Writer to the given filename. It serializes data in format version 2.
+// 给定文件夹名，打开一个索引写入器
 func NewWriter(ctx context.Context, fn string) (*Writer, error) {
+	// 打开对应的目录
 	dir := filepath.Dir(fn)
 
 	df, err := fileutil.OpenDir(dir)
@@ -189,10 +210,12 @@ func NewWriter(ctx context.Context, fn string) (*Writer, error) {
 	}
 	defer df.Close() // Close for platform windows.
 
+	// 清理一遍数据目录
 	if err := os.RemoveAll(fn); err != nil {
 		return nil, errors.Wrap(err, "remove any existing index at path")
 	}
 
+	// 同时会打开三个文件，进行数据写入？？
 	// Main index file we are building.
 	f, err := NewFileWriter(fn)
 	if err != nil {
@@ -208,10 +231,13 @@ func NewWriter(ctx context.Context, fn string) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// 不知道这样写的目的是什么
 	if err := df.Sync(); err != nil {
 		return nil, errors.Wrap(err, "sync dir")
 	}
 
+	// 创建数据写入器
 	iw := &Writer{
 		ctx:   ctx,
 		f:     f,
@@ -220,22 +246,30 @@ func NewWriter(ctx context.Context, fn string) (*Writer, error) {
 		stage: idxStageNone,
 
 		// Reusable memory.
-		buf1: encoding.Encbuf{B: make([]byte, 0, 1<<22)},
-		buf2: encoding.Encbuf{B: make([]byte, 0, 1<<22)},
+		// 打开两个buffer，每个buffer的大小是4M
+		buf1: encoding.Encbuf{B: make([]byte, 0, 4194304)},
+		buf2: encoding.Encbuf{B: make([]byte, 0, 4194304)},
 
-		labelNames: make(map[string]uint64, 1<<8),
+		// 存放TagK ->  xxx的，初始化256个
+		labelNames: make(map[string]uint64, 256),
 		crc32:      newCRC32(),
 	}
+
+	// 先把Meta写上,megicNumber、Version,不过这个时候是在Buffer中的
+	// 还没有刷到文件中去，假如这个时候断电，那么这部分数据将会不存在
 	if err := iw.writeMeta(); err != nil {
 		return nil, err
 	}
 	return iw, nil
 }
 
+// 直接就写文件了，会不会有性能问题呢？，是不是可以堆积一段buf
+// 然后再写入数据呢
 func (w *Writer) write(bufs ...[]byte) error {
 	return w.f.Write(bufs...)
 }
 
+// 指定偏移量，写数据到指定的位置
 func (w *Writer) writeAt(buf []byte, pos uint64) error {
 	return w.f.WriteAt(buf, pos)
 }
@@ -299,19 +333,23 @@ func (fw *FileWriter) WriteAt(buf []byte, pos uint64) error {
 }
 
 // AddPadding adds zero byte padding until the file size is a multiple size.
+// 增加一些占位符,起到对其的作用
 func (fw *FileWriter) AddPadding(size int) error {
+	// 判断文件大小是否对齐了
 	p := fw.pos % uint64(size)
 	if p == 0 {
 		return nil
 	}
 	p = uint64(size) - p
 
+	// 没对齐，写入一些空的数据，将文件对齐
 	if err := fw.Write(make([]byte, p)); err != nil {
 		return errors.Wrap(err, "add padding")
 	}
 	return nil
 }
 
+// 刷出buffer中的数据，关闭写索引器
 func (fw *FileWriter) Close() error {
 	if err := fw.Flush(); err != nil {
 		return err
@@ -322,46 +360,58 @@ func (fw *FileWriter) Close() error {
 	return fw.f.Close()
 }
 
+// 删除索引文件
 func (fw *FileWriter) Remove() error {
 	return os.Remove(fw.name)
 }
 
 // ensureStage handles transitions between write stages and ensures that IndexWriter
 // methods are called in an order valid for the implementation.
+//  sureStage处理写阶段之间的过渡，并确保以对实现有效的顺序调用IndexWriter方法
+// 需要传入当前的数据状态
 func (w *Writer) ensureStage(s indexWriterStage) error {
+	// 如果索引已经写完了，那么就可以不用继续处理了
 	select {
 	case <-w.ctx.Done():
 		return w.ctx.Err()
 	default:
 	}
 
+	// 期望的状态和当前状态是一样的，那么也不用继续再进行一次处理
+	// 也就是已经达到期望的状态
 	if w.stage == s {
 		return nil
 	}
+	// 如果还是在上一个状态
 	if w.stage < s-1 {
 		// A stage has been skipped.
 		if err := w.ensureStage(s - 1); err != nil {
 			return err
 		}
 	}
+	// 状态错误
 	if w.stage > s {
 		return errors.Errorf("invalid stage %q, currently at %q", s, w.stage)
 	}
 
 	// Mark start of sections in table of contents.
+	// 标记开始的位置,记录TOC
 	switch s {
+	// 符号表
 	case idxStageSymbols:
 		w.toc.Symbols = w.f.pos
 		if err := w.startSymbols(); err != nil {
 			return err
 		}
+		// 符号表结束，到了写时序
 	case idxStageSeries:
 		if err := w.finishSymbols(); err != nil {
 			return err
 		}
 		w.toc.Series = w.f.pos
-
+		// 写入完成
 	case idxStageDone:
+		// 写TOC
 		w.toc.LabelIndices = w.f.pos
 		// LabelIndices generation depends on the posting offset
 		// table produced at this stage.
@@ -395,6 +445,7 @@ func (w *Writer) ensureStage(s indexWriterStage) error {
 	return nil
 }
 
+// 写Meta
 func (w *Writer) writeMeta() error {
 	w.buf1.Reset()
 	w.buf1.PutBE32(MagicIndex)
@@ -404,53 +455,74 @@ func (w *Writer) writeMeta() error {
 }
 
 // AddSeries adds the series one at a time along with its chunks.
+// 增加一条时间线，这条时间线可能有多个chunk
 func (w *Writer) AddSeries(ref uint64, lset labels.Labels, chunks ...chunks.Meta) error {
+	// 首先，需要对状态进行调整,这块其实就是一个状态机,标记当前在写时序数据状态
 	if err := w.ensureStage(idxStageSeries); err != nil {
 		return err
 	}
+	// 和最后一条时序进行对比，要保证有序
 	if labels.Compare(lset, w.lastSeries) <= 0 {
 		return errors.Errorf("out-of-order series added with label set %q", lset)
 	}
 
+	// ID 也要有序进行写入
 	if ref < w.lastRef && len(w.lastSeries) != 0 {
 		return errors.Errorf("series with reference greater than %d already added", ref)
 	}
 	// We add padding to 16 bytes to increase the addressable space we get through 4 byte
 	// series references.
+	// 数据对齐,按照16字节的对齐
 	if err := w.addPadding(16); err != nil {
 		return errors.Errorf("failed to write padding bytes: %v", err)
 	}
 
+	// 为啥按照16位来对齐呢？？
 	if w.f.pos%16 != 0 {
 		return errors.Errorf("series write not 16-byte aligned at %d", w.f.pos)
 	}
 
 	w.buf2.Reset()
-	w.buf2.PutUvarint(len(lset))
+	// 写入Tag的长度
 
+	/*
+		查询meta逻辑：
+		for i := 0; i < len(lset);i++ {
+			k1 := buf[:4]
+			v1 := buf[5:8]
+		}
+	*/
+	w.buf2.PutUvarint(len(lset))
+	// 遍历Tag，依次处理， Tag key 和tagV 符号编码，保存符号编码后的值
+	// 为了节省内存，只写id1 : id2
 	for _, l := range lset {
+		// tagK 构建符号表
+		// 从符号表里面搜索字符串
 		index, err := w.symbols.ReverseLookup(l.Name)
 		if err != nil {
 			return errors.Errorf("symbol entry for %q does not exist, %v", l.Name, err)
 		}
+		// TagName -> id，从0开始增加，不知道这个能干嘛
 		w.labelNames[l.Name]++
+		// 写入符号ID
 		w.buf2.PutUvarint32(index)
 
 		index, err = w.symbols.ReverseLookup(l.Value)
 		if err != nil {
 			return errors.Errorf("symbol entry for %q does not exist, %v", l.Value, err)
 		}
+		// 写入value的编码
 		w.buf2.PutUvarint32(index)
 	}
 
+	// 写入数据的长度
 	w.buf2.PutUvarint(len(chunks))
-
 	if len(chunks) > 0 {
 		c := chunks[0]
-		w.buf2.PutVarint64(c.MinTime)
-		w.buf2.PutUvarint64(uint64(c.MaxTime - c.MinTime))
-		w.buf2.PutUvarint64(c.Ref)
-		t0 := c.MaxTime
+		w.buf2.PutVarint64(c.MinTime)                      // 写minTime
+		w.buf2.PutUvarint64(uint64(c.MaxTime - c.MinTime)) // len
+		w.buf2.PutUvarint64(c.Ref)                         // id
+		t0 := c.MaxTime                                    // maxTime
 		ref0 := int64(c.Ref)
 
 		for _, c := range chunks[1:] {
@@ -466,6 +538,7 @@ func (w *Writer) AddSeries(ref uint64, lset labels.Labels, chunks ...chunks.Meta
 	w.buf1.Reset()
 	w.buf1.PutUvarint(w.buf2.Len())
 
+	// 写校验码
 	w.buf2.PutHash(w.crc32)
 
 	if err := w.write(w.buf1.Get(), w.buf2.Get()); err != nil {
@@ -485,16 +558,22 @@ func (w *Writer) startSymbols() error {
 	return w.write([]byte("alenblen"))
 }
 
+// 写入符号位
 func (w *Writer) AddSymbol(sym string) error {
+	// 设置当前写入状态，在写数据索引
 	if err := w.ensureStage(idxStageSymbols); err != nil {
 		return err
 	}
+	// 需要保证写入的是已经排好序的
 	if w.numSymbols != 0 && sym <= w.lastSymbol {
 		return errors.Errorf("symbol %q out-of-order", sym)
 	}
+	// 记录最后一个sym，方便后面写入的来计算一下写入的符号表是否是有序的？？
 	w.lastSymbol = sym
 	w.numSymbols++
+	// 清空buf
 	w.buf1.Reset()
+	// 传入一段buf,编入len + data
 	w.buf1.PutUvarintStr(sym)
 	return w.write(w.buf1.Get())
 }
@@ -1013,20 +1092,27 @@ type StringIter interface {
 	Err() error
 }
 
+// 索引读取器
 type Reader struct {
 	b   ByteSlice
-	toc *TOC
+	toc *TOC // 记录索引中各部分的位置
 
 	// Close that releases the underlying resources of the byte slice.
 	c io.Closer
 
 	// Map of LabelName to a list of some LabelValues's position in the offset table.
 	// The first and last values for each name are always present.
+	// LabelName到偏移表中某些LabelValues位置的列表的映射。
+	//每个名称的第一个和最后一个值始终存在。
+	// key -> offset1, offset2, offset3
 	postings map[string][]postingOffset
 	// For the v1 format, labelname -> labelvalue -> offset.
+	// 后面的版本，进行优化，k1 -> v1, offset
+	//                   k2 -> v2, offset
 	postingsV1 map[string]map[string]uint64
 
-	symbols     *Symbols
+	symbols *Symbols
+	// 缓存符号表，缓存的一些淘汰策略怎么定？
 	nameSymbols map[uint32]string // Cache of the label name symbol lookups,
 	// as there are not many and they are half of all lookups.
 
@@ -1067,11 +1153,14 @@ func NewReader(b ByteSlice) (*Reader, error) {
 }
 
 // NewFileReader returns a new index reader against the given index file.
+// 给定一个目录，进行索引的读取
 func NewFileReader(path string) (*Reader, error) {
+	// 使用mmp进行数据读取，加快速度
 	f, err := fileutil.OpenMmapFile(path)
 	if err != nil {
 		return nil, err
 	}
+	// 构建读取器,比较重要
 	r, err := newReader(realByteSlice(f.Bytes()), f)
 	if err != nil {
 		var merr tsdb_errors.MultiError
@@ -1087,33 +1176,39 @@ func newReader(b ByteSlice, c io.Closer) (*Reader, error) {
 	r := &Reader{
 		b:        b,
 		c:        c,
-		postings: map[string][]postingOffset{},
+		postings: map[string][]postingOffset{}, // 需要构建内存索引
 	}
 
 	// Verify header.
+	// 验证数据是否合法，简单对比一下长度  magic(4b) + version(1b) = 5b
 	if r.b.Len() < HeaderLen {
 		return nil, errors.Wrap(encoding.ErrInvalidSize, "index header")
 	}
+	// 读取maginc，验证数据合法性
 	if m := binary.BigEndian.Uint32(r.b.Range(0, 4)); m != MagicIndex {
 		return nil, errors.Errorf("invalid magic number %x", m)
 	}
+	// 读取版本
 	r.version = int(r.b.Range(4, 5)[0])
 
 	if r.version != FormatV1 && r.version != FormatV2 {
 		return nil, errors.Errorf("unknown index file version %d", r.version)
 	}
 
+	// 读取TOC
 	var err error
 	r.toc, err = NewTOCFromByteSlice(b)
 	if err != nil {
 		return nil, errors.Wrap(err, "read TOC")
 	}
 
+	// 读取符号表
 	r.symbols, err = NewSymbols(r.b, r.version, int(r.toc.Symbols))
 	if err != nil {
 		return nil, errors.Wrap(err, "read symbols")
 	}
 
+	// 构建posstingsOffTable
 	if r.version == FormatV1 {
 		// Earlier V1 formats don't have a sorted postings offset table, so
 		// load the whole offset table into memory.
@@ -1137,6 +1232,7 @@ func newReader(b ByteSlice, c io.Closer) (*Reader, error) {
 		valueCount := 0
 		// For the postings offset table we keep every label name but only every nth
 		// label value (plus the first and last one), to save memory.
+		// 读取postingsTbla,给索引再构建一次内存索引，相当于是二级索引
 		if err := ReadOffsetTable(r.b, r.toc.PostingsTable, func(key []string, _ uint64, off int) error {
 			if len(key) != 2 {
 				return errors.Errorf("unexpected key length for posting table %d", len(key))
@@ -1286,10 +1382,13 @@ func (s Symbols) Lookup(o uint32) (string, error) {
 	return sym, nil
 }
 
+// 把一些字符串进行符号编码，用来节省一些磁盘存储
 func (s Symbols) ReverseLookup(sym string) (uint32, error) {
 	if len(s.offsets) == 0 {
 		return 0, errors.Errorf("unknown symbol %q - no symbols", sym)
 	}
+	// 在符号表里面搜索，直到搜索到，符号表里面存储的是byte数据
+	// 不是字符串数据
 	i := sort.Search(len(s.offsets), func(i int) bool {
 		// Any decoding errors here will be lost, however
 		// we already read through all of this at startup.
@@ -1326,6 +1425,7 @@ func (s Symbols) ReverseLookup(sym string) (uint32, error) {
 	if s.version == FormatV2 {
 		return uint32(res), nil
 	}
+	// 编码就是POS
 	return uint32(s.bs.Len() - lastLen), nil
 }
 
@@ -1368,6 +1468,7 @@ func (s symbolsIter) Err() error { return s.err }
 
 // ReadOffsetTable reads an offset table and at the given position calls f for each
 // found entry. If f returns an error it stops decoding and returns the received error.
+// ReadOffsetTable读取一个偏移表，并在给定位置为每个偏移量调用f
 func ReadOffsetTable(bs ByteSlice, off uint64, f func([]string, uint64, int) error) error {
 	d := encoding.NewDecbufAt(bs, int(off), castagnoliTable)
 	startLen := d.Len()
@@ -1484,13 +1585,17 @@ func (r *Reader) LabelValues(name string) ([]string, error) {
 }
 
 // Series reads the series with the given ID and writes its labels and chunks into lbls and chks.
+// 给定ref，从索引里面读取label和chunk
 func (r *Reader) Series(id uint64, lbls *labels.Labels, chks *[]chunks.Meta) error {
 	offset := id
 	// In version 2 series IDs are no longer exact references but series are 16-byte padded
 	// and the ID is the multiple of 16 of the actual position.
+	// ref * 16 就能计算出offset??
+	// TODO 看一下ref编码的规则
 	if r.version == FormatV2 {
 		offset = id * 16
 	}
+	// 又要计算crc
 	d := encoding.NewDecbufUvarintAt(r.b, int(offset), castagnoliTable)
 	if d.Err() != nil {
 		return d.Err()
@@ -1498,7 +1603,18 @@ func (r *Reader) Series(id uint64, lbls *labels.Labels, chks *[]chunks.Meta) err
 	return errors.Wrap(r.dec.Series(d.Get(), lbls, chks), "read series")
 }
 
+// 传入tagk和一堆值，返回匹配的postings
+// v1改成了 kay-v:ref
+/*
+	搜索过程总结：
+	1、在内存中在postings map[string][]postingOffset，通过tagKey就可以找到offset列表，这个offset列表一般是记录一个tag key下对应的取值在postingTable中的offset分布
+	2.通过TOC，读取postingsTable，通过上面的offset，找到对应的tag value
+	3.对找到的tag value，和输入的进行比对，匹配上的，就返回offset
+	4.转换成为一个mergedPostings返回给上层
+*/
+
 func (r *Reader) Postings(name string, values ...string) (Postings, error) {
+	//  现在新版本都不是现在这样的格式了吧
 	if r.version == FormatV1 {
 		e, ok := r.postingsV1[name]
 		if !ok {
@@ -1521,6 +1637,8 @@ func (r *Reader) Postings(name string, values ...string) (Postings, error) {
 		return Merge(res...), nil
 	}
 
+	// postings map[string][]postingOffset
+	// 拿到一个tagk,把所有value的offset都扫出来吗？
 	e, ok := r.postings[name]
 	if !ok {
 		return EmptyPostings(), nil
@@ -1530,32 +1648,71 @@ func (r *Reader) Postings(name string, values ...string) (Postings, error) {
 		return EmptyPostings(), nil
 	}
 
+	// 建一个空的结构，应该可以拿到一个tagv，一个postings
 	res := make([]Postings, 0, len(values))
 	skip := 0
 	valueIndex := 0
+	// 因为我们的tag值是有序的,可以直接类似二分搜索，去掉一部分不需要搜索的
+	/*
+		type postingOffset struct {
+		value string
+		off   int
+		}
+	*/
+	// 要求写入有序，其实就是为了方便在这做一些二分搜索，提升性能
 	for valueIndex < len(values) && values[valueIndex] < e[0].value {
 		// Discard values before the start.
 		valueIndex++
 	}
+
+	// 从idx往后挪动len(value)，因为我们数据是有序的，所以搜索这几个就行
 	for valueIndex < len(values) {
 		value := values[valueIndex]
 
+		// 找到对应的值，记录下来在[]postingOffset中的位置
+		// 搜索使用二分搜索来查找并返回最小索引i
 		i := sort.Search(len(e), func(i int) bool { return e[i].value >= value })
 		if i == len(e) {
 			// We're past the end.
 			break
 		}
+
+		// 尝试往前搜索
 		if i > 0 && e[i].value != value {
 			// Need to look from previous entry.
 			i--
 		}
 		// Don't Crc32 the entire postings offset table, this is very slow
 		// so hope any issues were caught at startup.
+		// 通过TOC，确定从哪里开始读取offset,直接把postings读出来，并解析进来
+		// 据说CRC校验非常慢，不期望在查询的时候校验，希望在启动的时候就计算CRC
 		d := encoding.NewDecbufAt(r.b, int(r.toc.PostingsTable), nil)
+		// 因为我们写入有序的，所以可以跳过目标之前的一段数据
 		d.Skip(e[i].off)
+
+		// 通过toc找到对应的位置
+		/*
+			    ┌─────────────────────┬──────────────────────┐
+				│ len <4b>            │ #entries <4b>        │
+				├─────────────────────┴──────────────────────┤
+				│ ┌────────────────────────────────────────┐ │
+				│ │  n = 2 <1b>                            │ │
+				│ ├──────────────────────┬─────────────────┤ │
+				│ │ len(name) <uvarint>  │ name <bytes>    │ │
+				│ ├──────────────────────┼─────────────────┤ │
+				│ │ len(value) <uvarint> │ value <bytes>   │ │
+				│ ├──────────────────────┴─────────────────┤ │
+				│ │  offset <uvarint64>                    │ │
+				│ └────────────────────────────────────────┘ │
+				│                    . . .                   │
+				├────────────────────────────────────────────┤
+				│  CRC32 <4b>                                │
+				└────────────────────────────────────────────┘
+		*/
 
 		// Iterate on the offset table.
 		var postingsOff uint64 // The offset into the postings table.
+		// 这里要遍历扫描一遍PostingsTable
 		for d.Err() == nil {
 			if skip == 0 {
 				// These are always the same number of bytes,
@@ -1569,10 +1726,15 @@ func (r *Reader) Postings(name string, values ...string) (Postings, error) {
 			}
 			v := d.UvarintBytes()       // Label value.
 			postingsOff = d.Uvarint64() // Offset.
+			// 判断tagValue是否相等
 			for string(v) >= value {
+				// 值匹配上
 				if string(v) == value {
 					// Read from the postings table.
-					d2 := encoding.NewDecbufAt(r.b, int(postingsOff), castagnoliTable)
+					// 这里要进行CRC 校验，性能非常慢。是不是可以直接不校验了？？
+					d2 := encoding.NewDecbufAt(r.b, int(postingsOff), nil)
+					// d2 := encoding.NewDecbufAt(r.b, int(postingsOff), castagnoliTable)
+					// 读取到文件中的偏移量
 					_, p, err := r.dec.Postings(d2.Get())
 					if err != nil {
 						return nil, errors.Wrap(err, "decode postings")
@@ -1661,6 +1823,44 @@ func (dec *Decoder) Postings(b []byte) (int, Postings, error) {
 	return n, newBigEndianPostings(l), d.Err()
 }
 
+/*
+ 解析下面的数据
+┌──────────────────────────────────────────────────────────────────────────┐
+│ len <uvarint>                                                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│ ┌──────────────────────────────────────────────────────────────────────┐ │
+│ │                     labels count <uvarint64>                         │ │
+│ ├──────────────────────────────────────────────────────────────────────┤ │
+│ │              ┌────────────────────────────────────────────┐          │ │
+│ │              │ ref(l_i.name) <uvarint32>                  │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ ref(l_i.value) <uvarint32>                 │          │ │
+│ │              └────────────────────────────────────────────┘          │ │
+│ │                             ...                                      │ │
+│ ├──────────────────────────────────────────────────────────────────────┤ │
+│ │                     chunks count <uvarint64>                         │ │
+│ ├──────────────────────────────────────────────────────────────────────┤ │
+│ │              ┌────────────────────────────────────────────┐          │ │
+│ │              │ c_0.mint <varint64>                        │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ c_0.maxt - c_0.mint <uvarint64>            │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ ref(c_0.data) <uvarint64>                  │          │ │
+│ │              └────────────────────────────────────────────┘          │ │
+│ │              ┌────────────────────────────────────────────┐          │ │
+│ │              │ c_i.mint - c_i-1.maxt <uvarint64>          │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ c_i.maxt - c_i.mint <uvarint64>            │          │ │
+│ │              ├────────────────────────────────────────────┤          │ │
+│ │              │ ref(c_i.data) - ref(c_i-1.data) <varint64> │          │ │
+│ │              └────────────────────────────────────────────┘          │ │
+│ │                             ...                                      │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+├──────────────────────────────────────────────────────────────────────────┤
+│ CRC32 <4b>                                                               │
+└──────────────────────────────────────────────────────────────────────────┘
+*/
+
 // Series decodes a series entry from the given byte slice into lset and chks.
 func (dec *Decoder) Series(b []byte, lbls *labels.Labels, chks *[]chunks.Meta) error {
 	*lbls = (*lbls)[:0]
@@ -1668,8 +1868,10 @@ func (dec *Decoder) Series(b []byte, lbls *labels.Labels, chks *[]chunks.Meta) e
 
 	d := encoding.Decbuf{B: b}
 
+	// 读取labels count <uvarint64>
 	k := d.Uvarint()
 
+	// 读取label,并在符号表中还原成字符串
 	for i := 0; i < k; i++ {
 		lno := uint32(d.Uvarint())
 		lvo := uint32(d.Uvarint())
@@ -1691,6 +1893,7 @@ func (dec *Decoder) Series(b []byte, lbls *labels.Labels, chks *[]chunks.Meta) e
 	}
 
 	// Read the chunks meta data.
+	// chunks count <uvarint64>
 	k = d.Uvarint()
 
 	if k == 0 {
@@ -1708,6 +1911,7 @@ func (dec *Decoder) Series(b []byte, lbls *labels.Labels, chks *[]chunks.Meta) e
 	})
 	t0 = maxt
 
+	// 读取chunk meta
 	for i := 1; i < k; i++ {
 		mint := int64(d.Uvarint64()) + t0
 		maxt := int64(d.Uvarint64()) + mint

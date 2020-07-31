@@ -36,9 +36,10 @@ func AllPostingsKey() (name, value string) {
 // ensureOrder() must be called once before any reads are done. This allows for quick
 // unordered batch fills on startup.
 type MemPostings struct {
-	mtx     sync.RWMutex
+	mtx sync.RWMutex
+	// key -> v [s1,s2,s3]
 	m       map[string]map[string][]uint64
-	ordered bool
+	ordered bool // 判断是否已经完成排序
 }
 
 // NewMemPostings returns a memPostings that's ready for reads and writes.
@@ -59,6 +60,7 @@ func NewUnorderedMemPostings() *MemPostings {
 }
 
 // SortedKeys returns a list of sorted label keys of the postings.
+// 按照key进行一次排序
 func (p *MemPostings) SortedKeys() []labels.Label {
 	p.mtx.RLock()
 	keys := make([]labels.Label, 0, len(p.m))
@@ -80,6 +82,7 @@ func (p *MemPostings) SortedKeys() []labels.Label {
 }
 
 // PostingsStats contains cardinality based statistics for postings.
+// 一些监控统计
 type PostingsStats struct {
 	CardinalityMetricsStats []Stat
 	CardinalityLabelStats   []Stat
@@ -131,9 +134,11 @@ func (p *MemPostings) Stats(label string) *PostingsStats {
 }
 
 // Get returns a postings list for the given label pair.
+// 传入k、v列表，找到对应的id列表
 func (p *MemPostings) Get(name, value string) Postings {
 	var lp []uint64
 	p.mtx.RLock()
+
 	l := p.m[name]
 	if l != nil {
 		lp = l[value]
@@ -143,6 +148,7 @@ func (p *MemPostings) Get(name, value string) Postings {
 	if lp == nil {
 		return EmptyPostings()
 	}
+	// 拷贝一份，给上层调用
 	return newListPostings(lp...)
 }
 
@@ -262,9 +268,11 @@ func (p *MemPostings) Iter(f func(labels.Label, Postings) error) error {
 }
 
 // Add a label set to the postings index.
+// 给一条时间线，构建倒排
 func (p *MemPostings) Add(id uint64, lset labels.Labels) {
 	p.mtx.Lock()
 
+	// 每个tag构建一个
 	for _, l := range lset {
 		p.addFor(id, l)
 	}
@@ -273,12 +281,15 @@ func (p *MemPostings) Add(id uint64, lset labels.Labels) {
 	p.mtx.Unlock()
 }
 
+// 给每个label构建一个倒排
 func (p *MemPostings) addFor(id uint64, l labels.Label) {
 	nm, ok := p.m[l.Name]
 	if !ok {
 		nm = map[string][]uint64{}
 		p.m[l.Name] = nm
 	}
+	// map[string]map[string][]uint64
+	// 某个tag v可能有多个id吗？？？
 	list := append(nm[l.Value], id)
 	nm[l.Value] = list
 
@@ -289,6 +300,7 @@ func (p *MemPostings) addFor(id uint64, l labels.Label) {
 	// be generated independently before adding them to postings.
 	// We repair order violations on insert. The invariant is that the first n-1
 	// items in the list are already sorted.
+	// 进行一次排序
 	for i := len(list) - 1; i >= 1; i-- {
 		if list[i] >= list[i-1] {
 			break
@@ -453,9 +465,9 @@ func (h *postingsHeap) Pop() interface{} {
 }
 
 type mergedPostings struct {
-	h           postingsHeap
-	initialized bool
-	cur         uint64
+	h           postingsHeap // 一个堆，放[]Postings
+	initialized bool         // 是否已经完成初始化操作了
+	cur         uint64       // 当前的坐标
 	err         error
 }
 

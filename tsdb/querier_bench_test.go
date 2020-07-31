@@ -29,6 +29,7 @@ const (
 	postingsBenchSuffix = "aaaaaaaaaabbbbbbbbbbccccccccccdddddddddd"
 )
 
+// 倒排索引压缩
 func BenchmarkPostingsForMatchers(b *testing.B) {
 	chunkDir, err := ioutil.TempDir("", "chunk_dir")
 	testutil.Ok(b, err)
@@ -138,6 +139,7 @@ func benchmarkPostingsForMatchers(b *testing.B, ir IndexReader) {
 	}
 }
 
+// 对查询进行性能压测
 func BenchmarkQuerierSelect(b *testing.B) {
 	chunkDir, err := ioutil.TempDir("", "chunk_dir")
 	testutil.Ok(b, err)
@@ -163,6 +165,7 @@ func BenchmarkQuerierSelect(b *testing.B) {
 
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
+					// 查询数据
 					ss := q.Select(sorted, nil, matcher)
 					for ss.Next() {
 					}

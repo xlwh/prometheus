@@ -48,6 +48,7 @@ func main() {
 	}
 }
 
+// 启动服务
 func execute() (err error) {
 	var (
 		defaultDBPath = filepath.Join("benchout", "storage")
@@ -75,13 +76,15 @@ func execute() (err error) {
 	var merr tsdb_errors.MultiError
 
 	switch kingpin.MustParse(cli.Parse(os.Args[1:])) {
+	// 写性能测试
 	case benchWriteCmd.FullCommand():
 		wb := &writeBenchmark{
-			outPath:     *benchWriteOutPath,
-			numMetrics:  *benchWriteNumMetrics,
-			samplesFile: *benchSamplesFile,
-			logger:      logger,
+			outPath:     *benchWriteOutPath,				// 压测数据产出目录
+			numMetrics:  *benchWriteNumMetrics,				// 写多少个metric
+			samplesFile: *benchSamplesFile,					// 测试数据Case
+			logger:      logger,							// 日志组件
 		}
+		// 运行性能测试
 		return wb.run()
 	case listCmd.FullCommand():
 		db, err := tsdb.OpenDBReadOnly(*listPath, nil)
@@ -143,20 +146,26 @@ func execute() (err error) {
 }
 
 type writeBenchmark struct {
+	// 运行参数
 	outPath     string
 	samplesFile string
 	cleanup     bool
 	numMetrics  int
 
+	// DB
 	storage *tsdb.DB
 
+	// 各种文件，产生profile
 	cpuprof   *os.File
 	memprof   *os.File
 	blockprof *os.File
 	mtxprof   *os.File
+
+	// 日志组件
 	logger    log.Logger
 }
 
+// 运行写入性能测试
 func (b *writeBenchmark) run() error {
 	if b.outPath == "" {
 		dir, err := ioutil.TempDir("", "tsdb_bench")
@@ -166,6 +175,7 @@ func (b *writeBenchmark) run() error {
 		b.outPath = dir
 		b.cleanup = true
 	}
+	// 清理并重新创建数据目录
 	if err := os.RemoveAll(b.outPath); err != nil {
 		return err
 	}
@@ -175,8 +185,10 @@ func (b *writeBenchmark) run() error {
 
 	dir := filepath.Join(b.outPath, "storage")
 
+	// 初始化日志组件
 	l := log.With(b.logger, "ts", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
 
+	// 打开TSDB
 	st, err := tsdb.Open(dir, l, nil, &tsdb.Options{
 		RetentionDuration: int64(15 * 24 * time.Hour / time.Millisecond),
 		MinBlockDuration:  int64(2 * time.Hour / time.Millisecond),
@@ -186,6 +198,7 @@ func (b *writeBenchmark) run() error {
 	}
 	b.storage = st
 
+	// 创建数据样本
 	var labels []labels.Labels
 
 	_, err = measureTime("readData", func() error {
@@ -211,6 +224,7 @@ func (b *writeBenchmark) run() error {
 		if err := b.startProfiling(); err != nil {
 			return err
 		}
+		// 写数据到存储
 		total, err = b.ingestScrapes(labels, 3000)
 		if err != nil {
 			return err
@@ -241,6 +255,7 @@ func (b *writeBenchmark) run() error {
 
 const timeDelta = 30000
 
+// 写入数据到存储
 func (b *writeBenchmark) ingestScrapes(lbls []labels.Labels, scrapeCount int) (uint64, error) {
 	var mu sync.Mutex
 	var total uint64
@@ -276,6 +291,7 @@ func (b *writeBenchmark) ingestScrapes(lbls []labels.Labels, scrapeCount int) (u
 	return total, nil
 }
 
+// 写入数据到存储
 func (b *writeBenchmark) ingestScrapesShard(lbls []labels.Labels, scrapeCount int, baset int64) (uint64, error) {
 	ts := baset
 
@@ -323,6 +339,7 @@ func (b *writeBenchmark) ingestScrapesShard(lbls []labels.Labels, scrapeCount in
 
 			total++
 		}
+		// 提交数据
 		if err := app.Commit(); err != nil {
 			return total, err
 		}
@@ -407,6 +424,7 @@ func measureTime(stage string, f func() error) (time.Duration, error) {
 	return time.Since(start), nil
 }
 
+// 读取数据
 func readPrometheusLabels(r io.Reader, n int) ([]labels.Labels, error) {
 	scanner := bufio.NewScanner(r)
 

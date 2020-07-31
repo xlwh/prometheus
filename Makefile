@@ -12,7 +12,7 @@
 # limitations under the License.
 
 # Needs to be defined before including Makefile.common to auto-generate targets
-DOCKER_ARCHS ?= amd64 armv7 arm64 s390x
+DOCKER_ARCHS ?= amd64
 
 REACT_APP_PATH = web/ui/react-app
 REACT_APP_SOURCE_FILES = $(wildcard $(REACT_APP_PATH)/public/* $(REACT_APP_PATH)/src/* $(REACT_APP_PATH)/tsconfig.json)
@@ -69,7 +69,7 @@ test: common-test react-app-test
 npm_licenses: $(REACT_APP_NODE_MODULES_PATH)
 	@echo ">> bundling npm licenses"
 	rm -f $(REACT_APP_NPM_LICENSES_TARBALL)
-	find $(REACT_APP_NODE_MODULES_PATH) -iname "license*" | tar cfj $(REACT_APP_NPM_LICENSES_TARBALL) --transform 's/^/npm_licenses\//' --files-from=-
+	find $(REACT_APP_NODE_MODULES_PATH) -iname "license*" | gtar cfj $(REACT_APP_NPM_LICENSES_TARBALL) --transform 's/^/npm_licenses\//' --files-from=-
 
 .PHONY: tarball
 tarball: npm_licenses common-tarball
@@ -79,6 +79,10 @@ docker: npm_licenses common-docker
 
 .PHONY: build
 build: assets common-build
+
+.PHONY: linux
+linux: linux
+
 
 .PHONY: build_tsdb
 build_tsdb:

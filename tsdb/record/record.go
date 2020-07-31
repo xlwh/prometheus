@@ -75,6 +75,22 @@ func (d *Decoder) Type(rec []byte) Type {
 }
 
 // Series appends series in rec to the given slice.
+// 从wal log中解压meta数据
+/*
+	┌────────────────────────────────────────────┐
+│ type = 1 <1b>                              │
+├────────────────────────────────────────────┤
+│ ┌─────────┬──────────────────────────────┐ │
+│ │ id <8b> │ n = len(labels) <uvarint>    │ │
+│ ├─────────┴────────────┬─────────────────┤ │
+│ │ len(str_1) <uvarint> │ str_1 <bytes>   │ │
+│ ├──────────────────────┴─────────────────┤ │
+│ │  ...                                   │ │
+│ ├───────────────────────┬────────────────┤ │
+│ │ len(str_2n) <uvarint> │ str_2n <bytes> │ │
+│ └───────────────────────┴────────────────┘ │
+│                  . . .                     │
+*/
 func (d *Decoder) Series(rec []byte, series []RefSeries) ([]RefSeries, error) {
 	dec := encoding.Decbuf{B: rec}
 
@@ -82,9 +98,9 @@ func (d *Decoder) Series(rec []byte, series []RefSeries) ([]RefSeries, error) {
 		return nil, errors.New("invalid record type")
 	}
 	for len(dec.B) > 0 && dec.Err() == nil {
-		ref := dec.Be64()
+		ref := dec.Be64() // id
 
-		lset := make(labels.Labels, dec.Uvarint())
+		lset := make(labels.Labels, dec.Uvarint()) // len
 
 		for i := range lset {
 			lset[i].Name = dec.UvarintStr()
@@ -107,6 +123,16 @@ func (d *Decoder) Series(rec []byte, series []RefSeries) ([]RefSeries, error) {
 }
 
 // Samples appends samples in rec to the given slice.
+/*
+│ type = 2 <1b>                                                    │
+├──────────────────────────────────────────────────────────────────┤
+│ ┌────────────────────┬───────────────────────────┐               │
+│ │ id <8b>            │ timestamp <8b>            │               │
+│ └────────────────────┴───────────────────────────┘               │
+│ ┌────────────────────┬───────────────────────────┬─────────────┐ │
+│ │ id_delta <uvarint> │ timestamp_delta <uvarint> │ value <8b>  │ │
+│ └────────────────────┴───────────────────────────┴─────────────┘ │
+*/
 func (d *Decoder) Samples(rec []byte, samples []RefSample) ([]RefSample, error) {
 	dec := encoding.Decbuf{B: rec}
 
@@ -142,6 +168,14 @@ func (d *Decoder) Samples(rec []byte, samples []RefSample) ([]RefSample, error) 
 }
 
 // Tombstones appends tombstones in rec to the given slice.
+/*
+│ type = 3 <1b>                                       │
+├─────────────────────────────────────────────────────┤
+│ ┌─────────┬───────────────────┬───────────────────┐ │
+│ │ id <8b> │ min_time <varint> │ max_time <varint> │ │
+│ └─────────┴───────────────────┴───────────────────┘ │
+│                        . . .                        │
+*/
 func (d *Decoder) Tombstones(rec []byte, tstones []tombstones.Stone) ([]tombstones.Stone, error) {
 	dec := encoding.Decbuf{B: rec}
 
@@ -171,6 +205,7 @@ type Encoder struct {
 }
 
 // Series appends the encoded series to b and returns the resulting slice.
+// 把时间序列线进行编码，编码后写入到WAL log中
 func (e *Encoder) Series(series []RefSeries, b []byte) []byte {
 	buf := encoding.Encbuf{B: b}
 	buf.PutByte(byte(Series))

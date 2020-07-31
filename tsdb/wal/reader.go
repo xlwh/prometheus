@@ -24,14 +24,15 @@ import (
 )
 
 // Reader reads WAL records from an io.Reader.
+// wal log的读取器
 type Reader struct {
-	rdr       io.Reader
-	err       error
-	rec       []byte
-	snappyBuf []byte
-	buf       [pageSize]byte
-	total     int64   // Total bytes processed.
-	curRecTyp recType // Used for checking that the last record is not torn.
+	rdr       io.Reader      // 文件读取器
+	err       error          // 异常
+	rec       []byte         // 一条数据记录
+	snappyBuf []byte         // snappy buf
+	buf       [pageSize]byte // 一页数据
+	total     int64          // 总的处理了多少数据
+	curRecTyp recType        // 当前数据记录类型
 }
 
 // NewReader returns a new reader.
@@ -56,10 +57,18 @@ func (r *Reader) Next() bool {
 	return r.err == nil
 }
 
+// 判断是否还有下一条数据记录
 func (r *Reader) next() (err error) {
 	// We have to use r.buf since allocating byte arrays here fails escape
 	// analysis and ends up on the heap, even though it seemingly should not.
+	/*
+		┌───────────┬──────────┬────────────┬──────────────┐
+		│ type <1b> │ len <2b> │ CRC32 <4b> │ data <bytes> │
+		└───────────┴──────────┴────────────┴──────────────┘
+	*/
+	// 数据头
 	hdr := r.buf[:recordHeaderSize]
+	// 数据头后面的数据
 	buf := r.buf[recordHeaderSize:]
 
 	r.rec = r.rec[:0]
@@ -67,27 +76,29 @@ func (r *Reader) next() (err error) {
 
 	i := 0
 	for {
+		// segment头上读一个字节
 		if _, err = io.ReadFull(r.rdr, hdr[:1]); err != nil {
 			return errors.Wrap(err, "read first header byte")
 		}
 		r.total++
-		r.curRecTyp = recTypeFromHeader(hdr[0])
-		compressed := hdr[0]&snappyMask != 0
+		r.curRecTyp = recTypeFromHeader(hdr[0]) // 结果类型
+		compressed := hdr[0]&snappyMask != 0    // 压缩类型
 
 		// Gobble up zero bytes.
+		// 可能是填充的0
 		if r.curRecTyp == recPageTerm {
-			// recPageTerm is a single byte that indicates the rest of the page is padded.
-			// If it's the first byte in a page, buf is too small and
-			// needs to be resized to fit pageSize-1 bytes.
+			// recPageTerm是一个字节，指示要填充页面的其余部分。
+			// 如果它是页面中的第一个字节，则buf太小且
+			// 需要调整大小以适合pageSize-1个字节
 			buf = r.buf[1:]
 
-			// We are pedantic and check whether the zeros are actually up
-			// to a page boundary.
+			// We are pedantic and check whether the zeros are actually up to a page boundary.
 			// It's not strictly necessary but may catch sketchy state early.
 			k := pageSize - (r.total % pageSize)
 			if k == pageSize {
 				continue // Initial 0 byte was last page byte.
 			}
+			// 读取K个字节
 			n, err := io.ReadFull(r.rdr, buf[:k])
 			if err != nil {
 				return errors.Wrap(err, "read remaining zeros")
@@ -124,6 +135,7 @@ func (r *Reader) next() (err error) {
 		if n != int(length) {
 			return errors.Errorf("invalid size: expected %d, got %d", length, n)
 		}
+		// 校验CRC码
 		if c := crc32.Checksum(buf[:length], castagnoliTable); c != crc {
 			return errors.Errorf("unexpected checksum %x, expected %x", c, crc)
 		}
